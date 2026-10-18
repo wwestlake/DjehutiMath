@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "presets": [
+    {"name":"Default","layout":{"leftWidth":210,"rightWidth":300,"bottomHeight":145,"zones":{"left":{"panels":["project"],"currentTab":0},"center":{"panels":["worksheet","frust"],"currentTab":0},"right":{"panels":["variables","agent"],"currentTab":0},"bottom":{"panels":[],"currentTab":0}},"floating":[]}},
+    {"name":"Focused Worksheet","layout":{"leftWidth":210,"rightWidth":300,"bottomHeight":145,"zones":{"left":{"panels":[],"currentTab":0},"center":{"panels":["worksheet"],"currentTab":0},"right":{"panels":[],"currentTab":0},"bottom":{"panels":[],"currentTab":0}},"floating":[]}},
+    {"name":"FRust Development","layout":{"leftWidth":210,"rightWidth":300,"bottomHeight":160,"zones":{"left":{"panels":["project"],"currentTab":0},"center":{"panels":["frust","worksheet"],"currentTab":0},"right":{"panels":["variables","agent"],"currentTab":0},"bottom":{"panels":["diagnostics"],"currentTab":0}},"floating":[]}}
+  ]
+}

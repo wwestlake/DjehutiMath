@@ -1,0 +1,17 @@
+{
+  "format": "djehuti-math-worksheet",
+  "version": 1,
+  "title": "Ohms law - first engineering calculation",
+  "cells": [
+    {
+      "id": "notes-ohms-law",
+      "kind": "text",
+      "source": "Ohms law\nResistance R = 1000 ohm. Current I = 0.012 A. Compute V = I R. Units in this foundation are documented explicitly; automatic dimensional quantities are planned."
+    },
+    {
+      "id": "calculation-ohms-law",
+      "kind": "frust",
+      "source": "pub fn run() -> String = {\n    let resistance_ohm: f64 = 1000.0;\n    let current_ampere: f64 = 0.012;\n    math_set_scalar(\"voltage_volt\", resistance_ohm * current_ampere);\n    \"Calculated voltage_volt; inspect Variables\"\n}\n"
+    }
+  ]
+}
