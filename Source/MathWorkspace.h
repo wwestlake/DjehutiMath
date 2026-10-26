@@ -39,7 +39,40 @@ struct Evaluation
     math_solver::Response response;
     Ticket ticket;
     bool stored = false;                       // the result was current and has been kept
+    bool reused = false;                       // the cell already had a current outcome; nothing was recomputed
     std::vector<std::string> computed;         // dependency cells that had to be evaluated first, in order
+};
+
+// The last attempt to compute a cell, whatever came of it (a value, undefined, unsupported, failed), with the
+// state it was computed from. Unlike a stored result it is kept for failures too, so the worksheet can show why.
+struct Outcome
+{
+    math_solver::Response response;
+    Ticket ticket;
+    math_solver::Operation op = math_solver::Operation::Evaluate;
+    std::uint64_t sequence = 0;
+};
+enum class OutcomeState { None, Current, Stale, Blocked };
+const char* outcomeStateName(OutcomeState state);
+
+struct EvaluateOptions
+{
+    math_solver::Operation op = math_solver::Operation::Evaluate;
+    std::shared_ptr<math_solver::CancelToken> cancel;
+    int timeoutMs = 0;                         // > 0: each engine run stops cooperatively after this long
+    bool force = false;                        // recompute even when the outcome is current
+};
+
+struct Stats
+{
+    std::uint64_t engineRuns = 0;              // requests sent to engines (dependencies included)
+    std::uint64_t evaluations = 0;             // cells whose outcome was computed
+    std::uint64_t reused = 0;                  // cells whose current outcome was reused
+};
+
+struct BatchResult
+{
+    std::vector<std::string> evaluated, reused, failed, skipped;     // cell ids, in computation order
 };
 
 class Workspace final : private math_frontend::Resolver
@@ -70,10 +103,20 @@ public:
     bool submitResult(const Ticket& ticket, math_value::Value value);
     ResultStatus resultStatus(const std::string& id);
     const StoredResult* result(const std::string& id);          // only a current result; null otherwise
-    // Evaluates a cell, first evaluating the cells whose definitions it needs (reusing current results).
+    // Evaluates a cell, first evaluating the cells whose definitions it needs (reusing current outcomes).
+    Evaluation evaluate(const std::string& id, const math_solver::Registry& registry, const EvaluateOptions& options);
     Evaluation evaluate(const std::string& id, const math_solver::Registry& registry,
                         math_solver::Operation op = math_solver::Operation::Evaluate,
                         std::shared_ptr<math_solver::CancelToken> cancel = nullptr);
+    // Evaluates the given cells (or all of them), dependencies first, and only those whose outcome is not current.
+    BatchResult evaluateCells(const std::vector<std::string>& ids, const math_solver::Registry& registry, const EvaluateOptions& options = {});
+    BatchResult evaluateAll(const math_solver::Registry& registry, const EvaluateOptions& options = {});
+    // True for a cell that has something to compute (not an assumption, not empty).
+    bool evaluable(const std::string& id);
+    const Outcome* outcome(const std::string& id) const;               // the last attempt, current or not
+    OutcomeState outcomeState(const std::string& id);
+    void clearOutcome(const std::string& id);
+    const Stats& stats() const { return statistics; }
 
     const math_doc::MathSnapshot* snapshot(const std::string& id) const;
 
@@ -101,6 +144,14 @@ private:
     std::map<std::string, math_frontend::Declaration> declared;
     std::map<std::string, std::vector<math_ir::Diagnostic>> extra;
     std::set<std::string> analysing;
+    std::map<std::string, Outcome> outcomes;
+    Stats statistics;
+    std::uint64_t sequence = 0;
     bool graphDirty = true;
+
+    Evaluation compute(const std::string& id, const math_solver::Registry& registry, const EvaluateOptions& options,
+                       const std::map<std::string, math_value::Value>& bindings,
+                       const std::map<std::string, math_solver::FunctionDefinition>& functions, const std::vector<std::string>& upstreamFailed);
+    const Outcome* currentOutcome(const std::string& id, math_solver::Operation op);
 };
 }

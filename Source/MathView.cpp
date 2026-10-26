@@ -36,7 +36,7 @@ juce::Point<float> MathView::origin() const
 
 void MathView::paint(juce::Graphics& g)
 {
-    g.setColour(juce::Colour(0xff10161d));
+    g.setColour(backgroundColour);
     g.fillRoundedRectangle(getLocalBounds().toFloat(), 6.0f);
     if (!result.problem.isEmpty())
     {
@@ -45,7 +45,7 @@ void MathView::paint(juce::Graphics& g)
         g.drawFittedText(result.problem, getLocalBounds().reduced(10), juce::Justification::centredLeft, 2);
         return;
     }
-    math_layout::paint(g, result, origin(), juce::Colour(0xffeaf1f7));
+    math_layout::paint(g, result, origin(), dimmed ? foregroundColour.withAlpha(0.42f) : foregroundColour);
 }
 
 void MathView::mouseMove(const juce::MouseEvent& e)

@@ -19,6 +19,21 @@ const char* const kTimes = "\xC3\x97";
 const char* const kThinSpace = "\xE2\x80\x89";
 const char* const kAssign = "\xE2\x89\x94";
 
+// The name of the coherent SI unit that has exactly this dimension, when there is a conventional one (V, Ω, N, ...).
+// Quantities without one (m/s, m^2) are shown in base units.
+const char* namedUnit(const math_ir::Dim& dim)
+{
+    static const char* const names[] = { "N", "Pa", "J", "W", "C", "V", "F", "\xCE\xA9", "S", "H", "T", "Wb" };
+    static const char* const lookups[] = { "N", "Pa", "J", "W", "C", "V", "F", "ohm", "S", "H", "T", "Wb" };
+    if (!dim.known || dim.isDimensionless()) return nullptr;
+    for (size_t i = 0; i < sizeof names / sizeof *names; ++i)
+    {
+        math_units::UnitInfo info;
+        if (math_units::lookup(lookups[i], info) && info.dim == dim) return names[i];
+    }
+    return nullptr;
+}
+
 struct Precedence { static constexpr int Relation = 0, Add = 1, Mul = 2, Power = 3, Atom = 4; };
 
 class Builder
@@ -163,6 +178,7 @@ public:
         {
             out.push_back(atom(Kind::Symbol, kThinSpace));
             if (unitExpr != nullptr) emit(unitExpr, Precedence::Relation, out);
+            else if (const auto* named = namedUnit(v.dim)) out.push_back(atom(Kind::Identifier, named, Style::Upright));
             else dimensionUnits(out, v.dim);
             shown = true;
         }
