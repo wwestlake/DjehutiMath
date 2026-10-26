@@ -48,12 +48,13 @@ public:
 
 private:
     void save();
+    void fetchModels();
     juce::ApplicationProperties& properties;
     std::function<void()> onSaved;
     juce::Label providerLabel, profileLabel, modelLabel, keyLabel, status;
-    juce::ComboBox provider;
+    juce::ComboBox provider, models;
     juce::TextEditor profile, model, key;
-    juce::TextButton saveButton { "Save" }, removeButton { "Remove key" }, cancelButton { "Close" };
+    juce::TextButton fetchButton { "List models" }, saveButton { "Save" }, removeButton { "Remove key" }, cancelButton { "Close" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DjehutiAgentSettings)
 };

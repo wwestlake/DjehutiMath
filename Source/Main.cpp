@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "DjehutiMath.h"
+#include "DspCheck.h"
 #include "MathKnowledge.h"
 #include "MathSession.h"
 #include "ProtectedCredentialStore.h"
@@ -72,6 +73,12 @@ public:
             const auto arguments = juce::StringArray::fromTokens(commandLine, true);
             const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/foundation-check.json");
             std::exit(foundationCheck(report) ? 0 : 1);
+        }
+        if (commandLine.startsWith("--dsp-check"))
+        {
+            const auto arguments = juce::StringArray::fromTokens(commandLine, true);
+            const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/dsp-check.json");
+            std::exit(dspCheck(report) ? 0 : 1);
         }
         window = std::make_unique<Window>();
     }

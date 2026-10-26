@@ -49,3 +49,24 @@ No broad regression suite, standalone JUCE test runner, Release build or real pa
 The application specification is `docs/PROJECT_SPECIFICATION.md` (also saved in the Drive folder). Symbolic algebra, matrix/tensor values, complex/sparse backends, units, advanced numerical solver families, plotting and engineering/science libraries are planned. No backend selection has been finalized. Inspect existing FRust numerical pods and native library options, then agree on expression/value/units semantics before implementing solver families.
 
 `docs/getting-started.html` is bundled Help; the app links to the actual LagDaemon website home. Dedicated Math website docs are **not published**. `docs/WEBSITE_HELP_HANDOFF.md` prepares a separate website assignment, including product registration, a verified documentation route and contextual Help links. Do not invent a live route or deploy website changes under the desktop assignment.
+
+## DEWB capability parity work (branch `feature/dewb-capability-parity`, uncommitted)
+
+Work order: bring FRust, node programming, the agent, VST generation, audio pipeline access and sound-effects DSP up to DEWB's level, adapting rather than copying circuit-specific code. Math has no circuit solver or schematics; the DSP/VST chain is Math-owned and ready for the future Math-to-FRust compiler (`dsp_effect::EffectFrontend`, `registerFrontend`; no frontend is registered yet).
+
+### What exists
+- **FRust:** `compileToObject`, `loadObject`, `manifestJson` added to `FrustEngine`; DEWB's Debugger panel; debug programs also get the math host functions. DSP-only host math (`djehuti_dsp_sin/cos/tan/tanh/atan/exp/log/sqrt/pow`) is registered; ordinary worksheet scripts still have no sqrt/sin.
+- **Nodes:** DEWB's `NodeCompiler.cpp` and `NodeDesignerPanel` copied unchanged (self-contained). Panels: Node Designer, Debugger. Layout presets: Node Programming, Audio DSP. The node compiler's executable `print` accepts only literal values (a DEWB limitation, not changed).
+- **Audio:** `AudioPipeline` rewritten (not copied): device opens on demand and is released by Stop Live, chunk-safe callback, file or hardware input, WAV in/out, meters, resampled playback; silent (not pass-through) with no effect attached.
+- **DSP/VST:** `DspEffect` (directives, native COFF compile, `.frust-il` artifact v1 with magic `DJEHUTI_MATH_EFFECT_IL`, integrity hashes, real-time `Runtime`, offline render, harmonic measurement), `DspPanel`, `VstExporter`, and the plugin `DjehutiMathEffectVst` (`Source/GeneratedVst`). The app build also builds the plugin and copies it to `templates/vst3`.
+- **Agent/command service:** 48 tools from the cards (about 30 new), all through `DjehutiMath::executeCommand`; async tools reply when a run/compile/debug step settles. Agent loop: outcome tool, no-progress guard, provider item preservation, model listing in Agent Settings. `LocalAgentApi`: localhost-only, bearer-token HTTP (`GET /v1/status`, `GET /v1/tools`, `POST /v1/tools/call`); port and token in `%APPDATA%\DjehutiMathgent-api.json` while the app runs. Anything running as this user that can read that file can call the tools, including file-writing ones.
+
+### Verified (Debug)
+- `djehuti_math.exe --dsp-check <json>`: 24 checks passed (effects match C++ references, diagnostics map to author lines, artifact tamper rejection, WAV round trip, chunked callback, file loop, node compile/run/save/reopen, VST3 export and a real JUCE VST3 host load with parameter, bypass, state restore, damaged-artifact inert load). `--foundation-check` still passes. Reports: `build/dsp-check.json`, `build/foundation-check-2.json`; build logs `build/build-dewb-parity*.log`.
+- Real app via the local API and GUI: DSP compile (~130 ms, off the UI thread), render, parameter change, VST3 export, node graph built by tools, compile, run, breakpoint, step over, variables, stop; live audio on the real device with file input, Stop released the device; the DSP Effects, Node Designer and Debugger panels rendered.
+
+### Not done / limits
+- **VST3 identity:** every export shares the runtime's compiled class identity (as DEWB's installed template does). Host loading was checked only with the in-app JUCE host, not a DAW. No Release build, no installer packaging.
+- **Not ported from DEWB:** markdown/KaTeX report viewer and web search (WebView/curl are off in Math), electronics cookbook, acceptance and gap registry, FRust programmable components (the Node Designer's component panel stays hidden).
+- **Not exercised:** the agent loop against a real provider (compiled only), Agent Settings model list and the changed dialog layout, hardware microphone input, stereo effects (live processing is mono copied to all outputs), the debugger panel's buttons by mouse (driven through tools instead), the FRust panel stale-status and Variables empty-state defects from the initial assessment (unchanged).
+- Nothing is committed or pushed.
