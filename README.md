@@ -5,7 +5,7 @@ Professional engineering mathematics workbench from LagDaemon Software. The firs
 ## Foundation
 
 - Dockable worksheet, FRust editor, project, variables, diagnostics, and BYOK agent panels.
-- Notes and executable FRust worksheet cells, versioned `.djmath` persistence, ordinary-close session recovery.
+- Notes, executable FRust cells and typeset mathematics cells (structured equations with stable node ids, natively laid out with the bundled STIX Two Math font; linear-notation input),  versioned `.djmath` persistence (version 2 stores mathematics as structure; version 1 files open), ordinary-close session recovery.
 - Native FRust compilation/JIT on a worker, Run/Stop, dark editor, source import/export, shared finite-real scalar workspace.
 - LagDaemon account integration, Math-specific settings/session storage, DPAPI-protected BYOK keys.
 - Filesystem LiteSemRAG reference-card retrieval on each agent request. Live tools are generated from the same catalog as their knowledge cards.

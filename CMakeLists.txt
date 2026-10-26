@@ -24,7 +24,9 @@ foreach(dependency CreationDock ai_provider frate_lib frust_lang frust_runtime f
         IMPORTED_LOCATION_DEBUG "${FRUSTLANG_ROOT}/lib/Debug/${dependency}.lib"
         IMPORTED_LOCATION_RELEASE "${FRUSTLANG_ROOT}/lib/Release/${dependency}.lib")
 endforeach()
-juce_add_gui_app(DjehutiMath PRODUCT_NAME "Djehuti Math" COMPANY_NAME "LagDaemon Software" BUNDLE_ID "com.lagdaemon.djehuti.math" VERSION 0.1.0)
+juce_add_gui_app(DjehutiMath PRODUCT_NAME "Djehuti Math" COMPANY_NAME "LagDaemon Software" BUNDLE_ID "com.lagdaemon.djehuti.math" VERSION 0.1.0
+    ICON_BIG "${CMAKE_SOURCE_DIR}/Resources/branding/djehuti-math-256.png"
+    ICON_SMALL "${CMAKE_SOURCE_DIR}/Resources/branding/djehuti-math-32.png")
 set_target_properties(DjehutiMath PROPERTIES OUTPUT_NAME djehuti_math
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/bin/Release")
@@ -36,7 +38,8 @@ target_sources(DjehutiMath PRIVATE
     Source/FrustEngine.cpp Source/FrustExecution.cpp Source/FrustPanel.cpp
     Source/NodeCompiler.cpp Source/NodeDesignerPanel.cpp Source/FrustDebuggerPanel.cpp
     Source/AudioPipeline.cpp Source/DspEffect.cpp Source/DspPanel.cpp Source/VstExporter.cpp
-    Source/DjehutiMathTools.cpp Source/LocalAgentApi.cpp Source/DspCheck.cpp)
+    Source/DjehutiMathTools.cpp Source/LocalAgentApi.cpp Source/DspCheck.cpp
+    Source/MathDoc.cpp Source/MathLinear.cpp Source/MathFont.cpp Source/MathLayout.cpp Source/MathView.cpp Source/MathCheck.cpp)
 target_include_directories(DjehutiMath PRIVATE Source
     "${FRUSTLANG_ROOT}/projects/03_creation_dock/include"
     "${FRUSTLANG_ROOT}/projects/04_ai_provider/include"
@@ -49,7 +52,7 @@ target_compile_options(DjehutiMath PRIVATE /FS /MP1)
 # Source text containing mathematical/UI Unicode is UTF-8. Limit this source
 # option to application files so it does not rebuild the shared JUCE modules.
 set_source_files_properties(Source/DjehutiMath.cpp Source/WorksheetPanel.cpp Source/NodeDesignerPanel.cpp Source/NodeCompiler.cpp
-    Source/FrustDebuggerPanel.cpp Source/DspPanel.cpp Source/DjehutiMathTools.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
+    Source/FrustDebuggerPanel.cpp Source/DspPanel.cpp Source/DjehutiMathTools.cpp Source/MathCheck.cpp Source/MathView.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
 target_link_libraries(DjehutiMath PRIVATE CreationDock ai_provider frust_plugin_host frust_lang
     frust_runtime frate_lib ${MATH_LLVM_LIBS} crypt32
     juce::juce_core juce::juce_data_structures juce::juce_events juce::juce_graphics
@@ -92,6 +95,8 @@ add_custom_command(TARGET DjehutiMath POST_BUILD
         "$<TARGET_FILE_DIR:DjehutiMath>/templates/vst3/Djehuti Math Effect.vst3"
     COMMENT "Packaging the VST3 runtime template")
 add_custom_command(TARGET DjehutiMath POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Resources/fonts" "$<TARGET_FILE_DIR:DjehutiMath>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Resources/branding" "$<TARGET_FILE_DIR:DjehutiMath>/branding"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/knowledge" "$<TARGET_FILE_DIR:DjehutiMath>/knowledge"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/docs" "$<TARGET_FILE_DIR:DjehutiMath>/docs"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Resources/default_layouts.json" "$<TARGET_FILE_DIR:DjehutiMath>/default_layouts.json")
