@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include "MathWorkspace.h"
 #include <CreationDock/DockManager.h>
 #include "Auth/DesktopAuthSession.h"
 #include "Auth/ProfileAvatarComponent.h"
@@ -61,6 +62,7 @@ private:
     DjehutiMenuBarComponent menu { this };
     std::unique_ptr<CreationDock::DockManager> dock;
     std::shared_ptr<WorksheetDocument> document = std::make_shared<WorksheetDocument>();
+    math_workspace::Workspace mathWorkspace;   // analysis, dependencies and results of the math cells
     WorksheetPanel* worksheet = nullptr;
     FrustPanel* frust = nullptr;
     NodeDesignerPanel* nodes = nullptr;

@@ -95,3 +95,42 @@ Order M0 implements the approved architecture (native JUCE, structured trees, st
 - Not verified in the GUI: the File menu item and the scroll-into-view behaviour (a Windows touch-keyboard host process kept taking the foreground and blocked clicks); both are verified by build only.
 - No Release build or installer packaging; the app icon is checked in the executable, not in an installer.
 - Operand-capture convention for `/` (documented in Help) and one-name-per-letter-run are policy decisions awaiting executive confirmation.
+
+## S0 - MathIR and computational foundation
+
+Branch `feature/s0-mathir-foundation`. Infrastructure and interfaces only; **no solver library is integrated** (no SymEngine, SymPy, Eigen).
+
+### Modules (all new; GUI-independent)
+| File | Role | Depends on |
+|---|---|---|
+| `MathIR` | Immutable typed expression DAG (`shared_ptr<const Expr>`): scalars (integer, rational, real, complex), symbols, constants, units, arithmetic, `Call`, `Sum/Product/Integral/Derivative`, `Index`, relations, `Define`, `Vector/Matrix/Tuple/System`, `Hole`. Types carry shape, number domain, physical `Dim` (7 SI exponents, may be unknown), sign. Every node carries a `Source` (cell, node id, item range). | std only |
+| `MathUnits` | SI catalogue (no offset units), prefixes, unit-expression parser (`kg*m/s^2`, `km/h`, `kΩ`) | MathIR |
+| `MathValue` | Value model: exact/approximate scalars, complex, vector, matrix, symbolic, boolean, Undefined, Failed; dimension, error bound, diagnostics, provenance | MathIR |
+| `MathSolver` | Solver-independent interface: `Operation` (evaluate, simplify, solve, differentiate, integrate, numeric), capability discovery, `Request` (bindings, tolerance, cancel token, deadline), `Response` (status, value, diagnostics, provenance), `Registry`; one engine, `djehuti.reference`, a small exact/float evaluator of fully numeric expressions | MathValue |
+| `MathDeps` | Name-based dependency graph: dependencies/dependents, topological order, cycles (Tarjan), conflicts, blocked cells, state stamps | std only |
+| `MathFrontend` | `math_doc` trees -> MathIR; symbol resolution, type/dimension/shape checks, diagnostics with source references; implements `math_doc::MathFrontend::analyze` | MathDoc, MathIR, MathUnits |
+| `MathWorkspace` | Snapshots -> analyses -> graph; cycle/duplicate/conflict diagnostics; revision-aware result tickets; `evaluate` runs dependencies first | all of the above |
+| `MathResult` | Value/MathIR -> presentation trees with fresh node ids and `derivedFrom` source relations; display unit option | MathDoc |
+| `MathCommands` | Command-service tools (below) | WorksheetPanel (document type only) |
+
+### Notation meaning given by the frontend (also in card `math.ir`)
+Definition cells (`a = 3`, `f(x) = ...`) define names; Assumption cells declare (`x in R`, `v in "m/s"`, `x > 0`); a quantity is a number plus a quoted unit (`9.81 "m/s^2"`); `sum_(i=1)^n`/`prod` body = following factors up to `+ - , ;` or a relation; `int_a^b body dx` runs to the differential; `dv/dt` and `(partial f)/(partial x)` are derivatives unless the names are defined; `[a,b]` vector, `[a,b;c,d]` matrix; pi, e, i are constants unless defined/declared/bound; an undefined symbol is a free real variable (information, not an error).
+
+### Dependencies and results
+Worksheet order does not matter. A cell depends on every cell that defines or declares a name it uses. Cycles (including `x = x + 1`) and cells depending on them are blocked. A result is stored only against a `Ticket` (cell revision + stamp of everything it depends on); an edit anywhere upstream makes the stored result stale and rejects late answers. Nothing from analysis or evaluation is written into the `.djmath` file (format unchanged, v1 and v2 load).
+
+### Command service / agent tools (cards added to `math_cards.jsonl`)
+`worksheet_math_analyze`, `worksheet_math_dependencies`, `worksheet_math_evaluate`, `math_solver_capabilities`. They share one dispatcher with the other 49 tools.
+
+### Verified (Debug)
+`djehuti_math.exe --mathir-check <json>`: 220 checks pass (rational overflow, dimensions, units, translation, types, dimension errors, symbol resolution, diagnostics and source ranges, dependency graph, workspace invalidation, cycles, revision-aware results, evaluation, solver registry/cancel/deadline, values, result display and IR round trips, commands, save/reopen). Also `--math-check` 43/43 and `--foundation-check` 7/7 after the change. Not verified: visual GUI (no GUI surface was added in S0).
+
+### Limits
+- Only the reference evaluator exists: no simplify, solve, differentiate or integrate engine; symbolic or unbound expressions are `Unsupported`.
+- Decimal literals are approximate reals (9.81 is not 981/100). Integers beyond 18 digits become approximate with a warning. Exact arithmetic overflow falls back to floating point with a warning.
+- Frontend does not yet support: prime notation, `±`, factorial, limits, higher-order derivatives, vector dot/cross products, `{}` sets, offset units (degC), `lim`, `gcd`, `mod`, `Re`, `Im`, `arg`, user-function evaluation by the reference engine.
+- An Assumption cell holds one line (one declaration list, e.g. `x, y in R`), like every non-System role.
+- Matrices display as bracketed lists with `;` (the document model has no matrix structure yet).
+- Operand capture of `/` still applies: write `(10 "N") / (2 "m^2")` to divide a quantity.
+- Assumed defaults to confirm: undeclared symbols are real with unknown dimension; `log` means base 10, `ln` natural.
+- Results are not yet shown in worksheet cells; there is no GUI for them (S0 scope).

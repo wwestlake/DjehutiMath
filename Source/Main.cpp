@@ -2,6 +2,7 @@
 #include "DjehutiMath.h"
 #include "DspCheck.h"
 #include "MathCheck.h"
+#include "MathIrCheck.h"
 #include "MathKnowledge.h"
 #include "MathSession.h"
 #include "ProtectedCredentialStore.h"
@@ -80,6 +81,12 @@ public:
             const auto arguments = juce::StringArray::fromTokens(commandLine, true);
             const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/math-check.json");
             std::exit(mathCheck(report) ? 0 : 1);
+        }
+        if (commandLine.startsWith("--mathir-check"))
+        {
+            const auto arguments = juce::StringArray::fromTokens(commandLine, true);
+            const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/mathir-check.json");
+            std::exit(mathIrCheck(report) ? 0 : 1);
         }
         if (commandLine.startsWith("--dsp-check"))
         {
