@@ -39,7 +39,9 @@ target_sources(DjehutiMath PRIVATE
     Source/NodeCompiler.cpp Source/NodeDesignerPanel.cpp Source/FrustDebuggerPanel.cpp
     Source/AudioPipeline.cpp Source/DspEffect.cpp Source/DspPanel.cpp Source/VstExporter.cpp
     Source/DjehutiMathTools.cpp Source/LocalAgentApi.cpp Source/DspCheck.cpp
-    Source/MathDoc.cpp Source/MathLinear.cpp Source/MathFont.cpp Source/MathLayout.cpp Source/MathView.cpp Source/MathCheck.cpp)
+    Source/MathDoc.cpp Source/MathLinear.cpp Source/MathFont.cpp Source/MathLayout.cpp Source/MathView.cpp Source/MathCheck.cpp
+    Source/MathIR.cpp Source/MathUnits.cpp Source/MathValue.cpp Source/MathSolver.cpp Source/MathDeps.cpp Source/MathFrontend.cpp
+    Source/MathWorkspace.cpp Source/MathResult.cpp Source/MathCommands.cpp Source/MathIrCheck.cpp)
 target_include_directories(DjehutiMath PRIVATE Source
     "${FRUSTLANG_ROOT}/projects/03_creation_dock/include"
     "${FRUSTLANG_ROOT}/projects/04_ai_provider/include"
@@ -52,7 +54,9 @@ target_compile_options(DjehutiMath PRIVATE /FS /MP1)
 # Source text containing mathematical/UI Unicode is UTF-8. Limit this source
 # option to application files so it does not rebuild the shared JUCE modules.
 set_source_files_properties(Source/DjehutiMath.cpp Source/WorksheetPanel.cpp Source/NodeDesignerPanel.cpp Source/NodeCompiler.cpp
-    Source/FrustDebuggerPanel.cpp Source/DspPanel.cpp Source/DjehutiMathTools.cpp Source/MathCheck.cpp Source/MathView.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
+    Source/FrustDebuggerPanel.cpp Source/DspPanel.cpp Source/DjehutiMathTools.cpp Source/MathCheck.cpp Source/MathView.cpp Source/MathIR.cpp Source/MathUnits.cpp Source/MathValue.cpp
+    Source/MathSolver.cpp Source/MathDeps.cpp Source/MathFrontend.cpp Source/MathWorkspace.cpp Source/MathResult.cpp Source/MathCommands.cpp
+    Source/MathIrCheck.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
 target_link_libraries(DjehutiMath PRIVATE CreationDock ai_provider frust_plugin_host frust_lang
     frust_runtime frate_lib ${MATH_LLVM_LIBS} crypt32
     juce::juce_core juce::juce_data_structures juce::juce_events juce::juce_graphics

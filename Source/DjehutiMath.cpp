@@ -1,4 +1,5 @@
 #include "DjehutiMath.h"
+#include "MathCommands.h"
 #include "MathKnowledge.h"
 #include "MathSession.h"
 #include <cmath>
@@ -279,6 +280,7 @@ juce::String DjehutiMath::dispatch(const std::string& name, const std::string& a
         o->setProperty("complete", complete); o->setProperty("lines", lines);
         return juce::JSON::toString(juce::var(o));
     }
+    if (math_commands::handles(name)) return math_commands::execute(name, args, *document, mathWorkspace);
     if (name == "worksheet_run_cell") { juce::String error; const bool ok = worksheet->runCell(args["id"].toString(), error); return result(ok, ok ? "Calculation started; use execution_status for its result." : error); }
     if (name == "workspace_inspect") return juce::JSON::toString(MathSession::instance().inspect());
     if (name == "frust_source") { if (args.hasProperty("source")) frust->setSource(args["source"].toString()); dock->activatePanel("frust"); return result(true, frust->getSource()); }
