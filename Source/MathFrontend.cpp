@@ -103,7 +103,7 @@ Type holeType() { Type t; t.shape = Shape::Hole; return t; }
 bool numericShape(const Type& t) { return t.shape == Shape::Scalar || t.shape == Shape::Vector || t.shape == Shape::Matrix; }
 
 // ---- built-in functions ------------------------------------------------------------------------------------------------------------
-enum Rule { Transcendental, Preserve, Floor, MinMax, SignRule, Det, Trace, Transpose, Norm };
+enum Rule { Transcendental, Preserve, Floor, MinMax, SignRule, Det, Trace, Transpose, Norm, Dot, Cross, RealPart, ComplexConjugate, Argument };
 struct Builtin { const char* name; int arity; Rule rule; };
 const Builtin kBuiltins[] = {
     { "sin", 1, Transcendental }, { "cos", 1, Transcendental }, { "tan", 1, Transcendental }, { "cot", 1, Transcendental },
@@ -113,9 +113,10 @@ const Builtin kBuiltins[] = {
     { "exp", 1, Transcendental }, { "ln", 1, Transcendental }, { "log", 1, Transcendental },
     { "abs", 1, Preserve }, { "floor", 1, Floor }, { "ceil", 1, Floor }, { "min", -1, MinMax }, { "max", -1, MinMax },
     { "sign", 1, SignRule }, { "sgn", 1, SignRule }, { "det", 1, Det }, { "trace", 1, Trace }, { "tr", 1, Trace },
-    { "transpose", 1, Transpose }, { "norm", 1, Norm },
+    { "transpose", 1, Transpose }, { "norm", 1, Norm }, { "dot", 2, Dot }, { "cross", 2, Cross },
+    { "re", 1, RealPart }, { "im", 1, RealPart }, { "Re", 1, RealPart }, { "Im", 1, RealPart }, { "conj", 1, ComplexConjugate }, { "arg", 1, Argument },
 };
-const char* const kUnsupportedFunctions[] = { "lim", "sup", "inf_", "dim", "ker", "gcd", "mod", "rank", "deg", "arg", "Re", "Im", "lg" };
+const char* const kUnsupportedFunctions[] = { "lim", "sup", "inf_", "dim", "ker", "gcd", "mod", "rank", "deg", "lg" };
 
 const Builtin* findBuiltin(const std::string& name)
 {
@@ -564,6 +565,13 @@ private:
         }
         Type t;
         const auto& a = args[0]->type;
+        const bool scalarRule = fn.rule == Transcendental || fn.rule == Preserve || fn.rule == Floor || fn.rule == SignRule
+                                || fn.rule == RealPart || fn.rule == ComplexConjugate || fn.rule == Argument;
+        if (scalarRule && numericShape(a) && a.shape != Shape::Scalar)
+        {
+            error("shape-mismatch", std::string(fn.name) + " takes a scalar, not a " + shapeName(a.shape) + ".", where);
+            return makeNode(Op::Call, std::move(args), Type {}, where, fn.name);
+        }
         auto dimensionlessArgument = [&] {
             if (a.dim.known && !a.dim.isDimensionless())
                 error("dimension-mismatch", std::string(fn.name) + " needs a dimensionless argument, not " + a.dim.toString() + ".", where);
@@ -606,6 +614,22 @@ private:
                 if (a.shape == Shape::Matrix) { t = a; std::swap(t.rows, t.cols); t.sign = Sign::Unknown; }
                 else if (numericShape(a)) error("shape-mismatch", "transpose needs a matrix.", where);
                 break;
+            case RealPart:
+                t = scalarType(a.domain == Domain::Unknown ? Domain::Unknown : (a.domain == Domain::Complex ? Domain::Real : a.domain), a.dim);
+                if (std::string(fn.name) == "im" || std::string(fn.name) == "Im") t.domain = a.domain == Domain::Unknown ? Domain::Unknown : Domain::Real;
+                break;
+            case ComplexConjugate: t = a; t.sign = Sign::Unknown; if (a.domain != Domain::Complex) t = a; break;
+            case Argument: t = scalarType(Domain::Real, Dim::dimensionless()); break;
+            case Dot: case Cross:
+            {
+                const auto& b = args[1]->type;
+                if (a.shape != Shape::Vector || b.shape != Shape::Vector || (a.rows != 0 && b.rows != 0 && a.rows != b.rows))
+                { if (numericShape(a) && numericShape(b)) error("shape-mismatch", std::string(fn.name) + " needs two vectors of the same length.", where); break; }
+                if (fn.rule == Cross && a.rows != 0 && a.rows != 3) { error("shape-mismatch", "cross needs vectors of length 3.", where); break; }
+                t = fn.rule == Dot ? scalarType(join(a.domain, b.domain), a.dim * b.dim) : Type {};
+                if (fn.rule == Cross) { t.shape = Shape::Vector; t.rows = 3; t.domain = join(a.domain, b.domain); t.dim = a.dim * b.dim; }
+                break;
+            }
             case Norm:
                 if (a.shape == Shape::Vector || a.shape == Shape::Matrix) t = scalarType(a.domain == Domain::Complex ? Domain::Real : join(a.domain, Domain::Real), a.dim, Sign::Nonnegative);
                 else if (numericShape(a)) error("shape-mismatch", "norm needs a vector or a matrix.", where);
@@ -941,6 +965,19 @@ private:
         const bool callable = i + 1 < e && s.items[i + 1].node->kind == Kind::Delimited && s.items[i + 1].node->text == "(";
         if (isFunctionName(name))
         {
+            if (i + 1 < e && s.items[i + 1].node->kind == Kind::Script)
+            {
+                // sin(x)^2: the exponent was attached to the bracket; it belongs to the result of the call
+                const auto& sc = *s.items[i + 1].node;
+                if (sc.slots[0] != nullptr && sc.slots[0]->items.size() == 1 && sc.slots[0]->items[0]->kind == Kind::Delimited
+                    && sc.slots[0]->items[0]->text == "(" && sc.slots[1] == nullptr && sc.slots[2] != nullptr)
+                {
+                    Item bracket { sc.slots[0]->items[0], 0 };
+                    auto call = functionCall(name, bracket, range(s, i, i + 2));
+                    next = i + 2;
+                    return mkPow(call, scriptExponent(sc), range(s, i, i + 2));
+                }
+            }
             if (callable)
             {
                 next = i + 2;
@@ -1008,18 +1045,31 @@ private:
         }
         bool composite = false;
         const auto name = nameOfScript(n, composite, true);
-        if (composite && !subscriptHasBound(n))
-            base = symbol(name, at(it));
+        const bool identifierBase = baseRow != nullptr && baseRow->items.size() == 1 && baseRow->items[0]->kind == Kind::Identifier;
+        bool asElement = false;
+        if (composite && subscriptHasBound(n)) asElement = true;                       // x_i with i the index of a sum
         else if (composite)
         {
-            // an element of a vector or matrix: x_i, a_ij
+            // x_1: the symbol "x_1", unless only the vector or matrix x exists
+            Definition named, container;
+            Declaration declared;
+            const bool nameKnown = lookupDefinition(name, named) || (resolver != nullptr && resolver->declaration(name, declared));
+            asElement = !nameKnown && lookupDefinition(baseRow->items[0]->text, container) && !container.isFunction
+                        && (container.type.shape == Shape::Vector || container.type.shape == Shape::Matrix);
+        }
+        else if (identifierBase && n.slots[1] != nullptr) asElement = true;            // x_(1,2)
+        if (asElement)
+        {
             auto container = symbol(baseRow->items[0]->text, at(baseRow->items[0]));
             std::vector<ExprPtr> args { container };
             const Seg sub = segOf(n.slots[1]);
             for (const auto& part : splitTop(sub, 0, sub.size(), ","))
                 args.push_back(part.first >= part.second ? missing(sub, part.first, part.second) : additive(sub, part.first, part.second));
-            base = makeNode(Op::Index, std::move(args), scalarType(container->type.domain, container->type.dim), at(it));
+            Type element = scalarType(container->type.domain, container->type.dim);
+            base = makeNode(Op::Index, std::move(args), element, at(it));
         }
+        else if (composite)
+            base = symbol(name, at(it));
         else
         {
             base = rowExpr(baseRow);

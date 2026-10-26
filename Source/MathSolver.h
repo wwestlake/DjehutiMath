@@ -53,6 +53,13 @@ struct NumericOptions
     int maxIterations = 1000;
 };
 
+// A function defined by a worksheet cell, available to engines that can evaluate it.
+struct FunctionDefinition
+{
+    std::vector<std::string> params;
+    math_ir::ExprPtr body;
+};
+
 struct Request
 {
     Operation op = Operation::Evaluate;
@@ -60,6 +67,7 @@ struct Request
     std::vector<math_ir::ExprPtr> equations;                // Solve: the system
     std::vector<std::string> variables;                     // Solve: the unknowns; Differentiate/Integrate: the variable
     std::map<std::string, math_value::Value> bindings;      // values of symbols
+    std::map<std::string, FunctionDefinition> functions;    // user-defined functions the expression may call
     NumericOptions numeric;
     std::shared_ptr<CancelToken> cancel;
     std::chrono::steady_clock::time_point deadline {};
@@ -90,6 +98,8 @@ public:
     virtual std::vector<Capability> capabilities() const = 0;
     // How well this engine can answer this particular request (it may inspect the expression).
     virtual Support assess(const Request& request) const;
+    // In words, why this engine cannot answer the request (empty when it can, or when it cannot say).
+    virtual std::string whyNot(const Request&) const { return {}; }
     virtual Response run(const Request& request) = 0;
 };
 

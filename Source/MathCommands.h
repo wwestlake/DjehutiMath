@@ -7,6 +7,8 @@
 //   worksheet_math_analyze       diagnostics, types, dimensions and MathIR of one math cell
 //   worksheet_math_dependencies  names defined and used, dependencies, order, cycles, conflicts, result status
 //   worksheet_math_evaluate      evaluates a cell (and the definitions it needs) with the registered engines
+//   worksheet_math_evaluate_all  evaluates every cell whose result is not current, dependencies first
+//   worksheet_math_results       the calculated results and their status, without computing anything
 //   math_solver_capabilities     what the registered engines can do
 
 #include "WorksheetPanel.h"
@@ -18,5 +20,5 @@ bool handles(const std::string& name);
 // Brings the workspace in line with the document's math cells (adds, updates, removes). Cheap when nothing changed.
 void sync(const WorksheetDocument& document, math_workspace::Workspace& workspace);
 // Runs a command; `args` is the JSON object of its arguments. Returns the JSON result text.
-juce::String execute(const std::string& name, const juce::var& args, const WorksheetDocument& document, math_workspace::Workspace& workspace);
+juce::String execute(const std::string& name, const juce::var& args, WorksheetDocument& document, math_workspace::Workspace& workspace);
 }

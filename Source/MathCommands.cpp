@@ -50,6 +50,41 @@ juce::String failure(const juce::String& message)
     return juce::JSON::toString(juce::var(o));
 }
 
+juce::var cellView(math_workspace::Workspace& workspace, const WorksheetCell& cell)
+{
+    const auto id = cell.id.toStdString();
+    auto* o = new juce::DynamicObject();
+    o->setProperty("id", cell.id);
+    o->setProperty("role", math_doc::roleName(cell.math.role));
+    o->setProperty("unit", cell.displayUnit);
+    o->setProperty("digits", cell.displayDigits);
+    const auto state = workspace.outcomeState(id);
+    o->setProperty("state", math_workspace::outcomeStateName(state));
+    const auto* outcome = workspace.outcome(id);
+    if (outcome == nullptr || cell.source.trim().isEmpty())
+    {
+        o->setProperty("status", "not-evaluated");
+        return juce::var(o);
+    }
+    const auto& response = outcome->response;
+    o->setProperty("status", math_solver::statusName(response.status));
+    o->setProperty("kind", math_value::kindName(response.value.kind));
+    o->setProperty("value", juce::String(response.value.describe()));
+    o->setProperty("exact", response.value.isExact() && response.provenance.exact);
+    o->setProperty("engine", juce::String(response.provenance.engine));
+    if (!response.diagnostics.empty()) o->setProperty("message", juce::String(response.diagnostics[0].message));
+    if (response.value.ok())
+    {
+        math_doc::IdAllocator ids;
+        math_result::Options options;
+        options.displayUnit = cell.displayUnit.toStdString();
+        options.significantDigits = cell.displayDigits;
+        const auto tree = math_result::fromValue(response.value, ids, {}, options);
+        o->setProperty("typeset", juce::String(math_linear::toLinear(tree.lines)));
+    }
+    return juce::var(o);
+}
+
 juce::var capabilityVar(const math_solver::EngineCapability& c)
 {
     auto* o = new juce::DynamicObject();
@@ -79,7 +114,8 @@ juce::var provenanceVar(const math_value::Provenance& p)
 
 bool handles(const std::string& name)
 {
-    return name == "worksheet_math_analyze" || name == "worksheet_math_dependencies" || name == "worksheet_math_evaluate" || name == "math_solver_capabilities";
+    return name == "worksheet_math_analyze" || name == "worksheet_math_dependencies" || name == "worksheet_math_evaluate" || name == "worksheet_math_evaluate_all"
+        || name == "worksheet_math_results" || name == "math_solver_capabilities";
 }
 
 void sync(const WorksheetDocument& document, math_workspace::Workspace& workspace)
@@ -97,7 +133,7 @@ void sync(const WorksheetDocument& document, math_workspace::Workspace& workspac
         if (present.count(id) == 0) workspace.removeCell(id);
 }
 
-juce::String execute(const std::string& name, const juce::var& args, const WorksheetDocument& document, math_workspace::Workspace& workspace)
+juce::String execute(const std::string& name, const juce::var& args, WorksheetDocument& document, math_workspace::Workspace& workspace)
 {
     static const auto registry = math_solver::defaultRegistry();
     sync(document, workspace);
@@ -170,6 +206,42 @@ juce::String execute(const std::string& name, const juce::var& args, const Works
         return juce::JSON::toString(juce::var(result));
     }
 
+    if (name == "worksheet_math_evaluate_all")
+    {
+        math_workspace::EvaluateOptions options;
+        options.timeoutMs = 5000;
+        options.force = (bool) args["force"];
+        const auto before = workspace.stats();
+        const auto batch = workspace.evaluateAll(registry, options);
+        auto* o = new juce::DynamicObject();
+        o->setProperty("ok", batch.failed.empty());
+        o->setProperty("message", batch.failed.empty() ? juce::String("Every math cell is current.") : juce::String((int) batch.failed.size()) + " cell(s) could not be calculated.");
+        o->setProperty("evaluated", stringsVar(batch.evaluated));
+        o->setProperty("reused", stringsVar(batch.reused));
+        o->setProperty("failed", stringsVar(batch.failed));
+        o->setProperty("skipped", stringsVar(batch.skipped));
+        auto* stats = new juce::DynamicObject();
+        stats->setProperty("engineRuns", (juce::int64) (workspace.stats().engineRuns - before.engineRuns));
+        stats->setProperty("cellsComputed", (juce::int64) (workspace.stats().evaluations - before.evaluations));
+        o->setProperty("stats", juce::var(stats));
+        juce::Array<juce::var> cellsOut;
+        for (const auto& cell : document.cells)
+            if (cell.kind == "math") cellsOut.add(cellView(workspace, cell));
+        o->setProperty("cells", cellsOut);
+        return juce::JSON::toString(juce::var(o));
+    }
+
+    if (name == "worksheet_math_results")
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("ok", true);
+        juce::Array<juce::var> cellsOut;
+        for (const auto& cell : document.cells)
+            if (cell.kind == "math" && (!args.hasProperty("id") || args["id"].toString() == cell.id)) cellsOut.add(cellView(workspace, cell));
+        o->setProperty("cells", cellsOut);
+        return juce::JSON::toString(juce::var(o));
+    }
+
     const auto id = args["id"].toString().toStdString();
     if (!workspace.has(id)) return failure("The id is not a math cell.");
 
@@ -201,7 +273,20 @@ juce::String execute(const std::string& name, const juce::var& args, const Works
     if (args.hasProperty("operation") && (!math_solver::operationFromName(args["operation"].toString().toStdString(), op)
                                           || (op != math_solver::Operation::Evaluate && op != math_solver::Operation::Numeric)))
         return failure("operation must be evaluate or numeric.");
-    const auto evaluation = workspace.evaluate(id, registry, op);
+    const int cellIndex = document.indexOf(args["id"].toString());
+    if (cellIndex >= 0)
+    {
+        auto& cell = document.cells[(size_t) cellIndex];
+        const auto unit = args.hasProperty("display_unit") ? args["display_unit"].toString().trim().substring(0, 40) : cell.displayUnit;
+        int digits = args.hasProperty("digits") ? (int) args["digits"] : cell.displayDigits;
+        digits = digits >= 3 && digits <= 17 ? digits : 15;
+        if (unit != cell.displayUnit || digits != cell.displayDigits) { cell.displayUnit = unit; cell.displayDigits = digits; document.modified = true; }
+    }
+    math_workspace::EvaluateOptions options;
+    options.op = op;
+    options.timeoutMs = 5000;
+    options.force = (bool) args["force"];
+    const auto evaluation = workspace.evaluate(id, registry, options);
     const auto& response = evaluation.response;
     auto* o = new juce::DynamicObject();
     const bool ok = response.status == math_solver::Status::Ok && response.value.ok();
@@ -213,6 +298,7 @@ juce::String execute(const std::string& name, const juce::var& args, const Works
     o->setProperty("value", juce::String(response.value.describe()));
     o->setProperty("exact", response.value.isExact() && response.provenance.exact);
     o->setProperty("stored", evaluation.stored);
+    o->setProperty("reused", evaluation.reused);
     o->setProperty("computedFirst", stringsVar(evaluation.computed));
     auto* ticket = new juce::DynamicObject();
     ticket->setProperty("revision", (juce::int64) evaluation.ticket.revision);
@@ -226,7 +312,11 @@ juce::String execute(const std::string& name, const juce::var& args, const Works
     {
         math_doc::IdAllocator ids;
         math_result::Options options;
-        options.displayUnit = args["display_unit"].toString().toStdString();
+        if (cellIndex >= 0)
+        {
+            options.displayUnit = document.cells[(size_t) cellIndex].displayUnit.toStdString();
+            options.significantDigits = document.cells[(size_t) cellIndex].displayDigits;
+        }
         const auto tree = math_result::fromValue(response.value, ids, {}, options);
         o->setProperty("typeset", juce::String(math_linear::toLinear(tree.lines)));
         if (!tree.problem.empty()) o->setProperty("displayNote", juce::String(tree.problem));

@@ -619,7 +619,13 @@ bool mathIrCheck(const juce::File& destination)
         wrong.displayUnit = "s";
         math_doc::IdAllocator a3;
         const auto wrongTree = math_result::fromValue(volts, a3, {}, wrong);
-        report.add(!wrongTree.problem.empty() && math_linear::toLinear(wrongTree.lines).find("kg") != std::string::npos, "A unit of the wrong dimension is refused and the value is shown in SI");
+        report.add(!wrongTree.problem.empty() && math_linear::toLinear(wrongTree.lines).find("V") != std::string::npos && math_linear::toLinear(wrongTree.lines).find("s") == std::string::npos, "A unit of the wrong dimension is refused and the value is shown in its SI unit");
+        math_doc::IdAllocator a7;
+        report.add(math_linear::toLinear(math_result::fromValue(volts, a7).lines).find("V") != std::string::npos, "A dimensioned result is shown in the named SI unit that has its dimension (V, not kg*m^2/(s^3*A))");
+        math_value::Value resistance = math_value::Value::real(4.0);
+        resistance.dim = math_units::parse("ohm").dim;
+        math_doc::IdAllocator a8;
+        report.add(math_linear::toLinear(math_result::fromValue(resistance, a8).lines).find("Omega") != std::string::npos, "A resistance is shown with the Greek capital omega (not as garbled bytes)");
         math_doc::IdAllocator a4;
         Source origin; origin.cell = "c"; origin.node = 42;
         const auto withOrigin = math_result::fromValue(Value::integer(5), a4, origin);
@@ -687,10 +693,6 @@ bool mathIrCheck(const juce::File& destination)
                        && evaluated["typeset"].toString() == "7", "worksheet_math_evaluate computes the cell with provenance and a typeset form", evaluated["value"].toString());
         const auto status = run("worksheet_math_dependencies", idArgs(c));
         report.add(status["cells"][0]["result"].toString() == "current", "A stored result is reported as current by worksheet_math_dependencies");
-        auto* withUnit = idArgs(c);
-        withUnit->setProperty("display_unit", "mm");
-        const auto none = run("worksheet_math_evaluate", withUnit);
-        report.add((bool) none["ok"], "worksheet_math_evaluate accepts a display unit");
         const auto failed = run("worksheet_math_evaluate", idArgs(bad));
         report.add(!(bool) failed["ok"], "worksheet_math_evaluate reports a cell with errors as not ok");
 
@@ -706,6 +708,10 @@ bool mathIrCheck(const juce::File& destination)
         report.add(math_commands::handles("worksheet_math_evaluate") && !math_commands::handles("worksheet_math_snapshot"), "The command set is the documented one");
 
         report.add(juce::JSON::toString(doc.toJson()) == before, "Analysis and evaluation leave the worksheet document unchanged");
+        auto* withUnit = idArgs(c);
+        withUnit->setProperty("display_unit", "mm");
+        const auto none = run("worksheet_math_evaluate", withUnit);
+        report.add((bool) none["ok"], "worksheet_math_evaluate accepts a display unit");
 
         // saving and reopening keeps what analysis sees
         const auto file = work.getChildFile("s0.djmath");
@@ -734,6 +740,363 @@ bool mathIrCheck(const juce::File& destination)
             math_workspace::Workspace ws3;
             math_commands::sync(old, ws3);
             report.add(true, "and its math cells (if any) analyse without trouble", juce::String((int) ws3.cellIds().size()) + " math cells");
+        }
+#endif
+    }
+
+    // ======================================================================================================================================
+    // S1: numerical evaluation and worksheet results
+    // ======================================================================================================================================
+    {
+        static const auto registry = math_solver::defaultRegistry();
+        auto evalText = [&](const juce::String& text, Role role = Role::Expression) { Fixture f; f.set("x", role, text); return f.ws.evaluate("x", registry); };
+        auto valueOf = [&](const juce::String& text) { return evalText(text).response.value; };
+        auto D = [&](const juce::String& text) {
+            const auto v = valueOf(text);
+            return v.ok() || v.diagnostics.empty() ? v.describe() : v.describe() + ": " + v.diagnostics[0].message;
+        };
+        auto nearReal = [&](const juce::String& text, double expected, double tolerance = 1e-12) {
+            const auto v = valueOf(text);
+            return v.isScalar() && v.kind != math_value::Kind::Complex && std::abs(v.scalar.toDouble() - expected) <= tolerance;
+        };
+        auto nearComplex = [&](const juce::String& text, double re, double im, double tolerance = 1e-12) {
+            const auto v = valueOf(text);
+            return v.kind == math_value::Kind::Complex && std::abs(v.scalar.re - re) <= tolerance && std::abs(v.scalar.im - im) <= tolerance;
+        };
+
+        // ---- rational and real arithmetic ------------------------------------------------------------------------------------------
+        report.equal(D("1/3 + 1/4"), "7/12", "S1 exact rational sums stay exact");
+        report.equal(D("(2/3)^2"), "4/9", "S1 rational powers stay exact");
+        report.equal(D("2^(-3)"), "1/8", "S1 negative integer powers are exact rationals");
+        report.equal(D("sqrt(1/4)"), "1/2", "S1 the root of a perfect-square rational is exact");
+        report.equal(D("root(3, 27)"), "3", "S1 the cube root of a perfect cube is exact");
+        report.equal(D("root(3, 0-8)"), "-2", "S1 an odd root of a negative number is exact and real");
+        report.add(valueOf("1/3 + 1/4").isExact() && !valueOf("sqrt(2)").isExact(), "S1 exact and approximate results are distinguished");
+        report.add(nearReal("sqrt(2)^2", 2.0), "S1 sqrt(2)^2 = 2 to floating-point accuracy");
+        report.add(nearReal("0.1 + 0.2", 0.3, 1e-15), "S1 decimal literals are floating point");
+        report.equal(D("floor(7/2)") + "/" + D("ceil(7/2)"), "3/4", "S1 floor and ceil are exact on rationals");
+        report.equal(D("min(3, 1/2)"), "1/2", "S1 min keeps exactness");
+        report.equal(D("abs(0-5/2)"), "5/2", "S1 abs of a rational is exact");
+
+        // ---- functions -------------------------------------------------------------------------------------------------------------
+        report.add(nearReal("sin(pi/6)", 0.5), "S1 sin(pi/6) = 0.5");
+        report.add(nearReal("cos(0)", 1.0) && nearReal("tan(pi/4)", 1.0) && nearReal("cot(pi/4)", 1.0) && nearReal("sec(0)", 1.0), "S1 cos, tan, cot and sec are correct");
+        report.add(nearReal("exp(1)", 2.718281828459045) && nearReal("ln(e)", 1.0) && nearReal("log(1000)", 3.0), "S1 exp, ln and log (base 10) are correct");
+        report.add(nearReal("atan(1)", 0.7853981633974483) && nearReal("asin(1)", 1.5707963267948966) && nearReal("acos(0)", 1.5707963267948966), "S1 inverse trigonometric functions are correct");
+        report.add(nearReal("cosh(2)^2 - sinh(2)^2", 1.0, 1e-12), "S1 hyperbolic functions satisfy their identity");
+        report.add(nearReal("sin(pi/3)^2 + cos(pi/3)^2", 1.0), "S1 the Pythagorean identity holds numerically");
+        report.add(nearReal("sum_(i=1)^20 1/(i*(i+1))", 20.0 / 21.0, 1e-12) && D("sum_(i=1)^20 1/(i*(i+1))") == "20/21", "S1 a telescoping sum is exact");
+        report.equal(D("prod_(i=1)^5 i"), "120", "S1 a product evaluates exactly");
+
+        // ---- complex arithmetic ----------------------------------------------------------------------------------------------------------
+        report.add(nearComplex("(1 + 2*i)*(3 - i)", 5.0, 5.0), "S1 complex multiplication");
+        report.add(nearComplex("(1 + 2*i)/(1 - i)", -0.5, 1.5), "S1 complex division");
+        report.add(valueOf("i^2").kind == math_value::Kind::Complex && valueOf("i^2").scalar.re == -1.0 && valueOf("i^2").scalar.im == 0.0, "S1 i^2 is exactly -1 and stays a Complex value");
+        report.add(nearComplex("sqrt(0-4)", 0.0, 2.0, 0.0), "S1 the square root of a negative number is exactly 2i");
+        report.add(nearComplex("exp(i*pi)", -1.0, 0.0, 1e-12), "S1 Euler's identity exp(i*pi) = -1");
+        report.add(nearComplex("(1+i)^2", 0.0, 2.0), "S1 a complex power");
+        report.add(nearComplex("ln(0-1)", 0.0, 3.141592653589793), "S1 the logarithm of a negative number is complex");
+        report.add(valueOf("asin(2)").kind == math_value::Kind::Complex, "S1 asin outside [-1, 1] gives its complex value, not an error");
+        report.add(nearReal("abs(3 + 4*i)", 5.0) && nearReal("re(3+4*i)", 3.0) && nearReal("im(3+4*i)", 4.0) && nearReal("arg(i)", 1.5707963267948966), "S1 abs, re, im and arg of a complex number");
+        report.add(nearComplex("conj(3 + 4*i)", 3.0, -4.0), "S1 the conjugate");
+        report.add(valueOf("(1+i)*(1-i)").kind == math_value::Kind::Complex && nearComplex("(1+i)*(1-i)", 2.0, 0.0, 0.0), "S1 a complex result with zero imaginary part is not silently turned real");
+        report.add(valueOf("3 > i").kind != math_value::Kind::Boolean, "S1 complex numbers are not ordered");
+
+        // ---- undefined values and diagnostics --------------------------------------------------------------------------------------------
+        {
+            const auto zero = evalText("1/(2-2)");
+            report.add(zero.response.value.kind == math_value::Kind::Undefined && zero.response.value.diagnostics[0].code == "div-zero", "S1 division by zero is an undefined value");
+            report.add(valueOf("0^(0-1)").kind == math_value::Kind::Undefined && valueOf("ln(0)").kind == math_value::Kind::Undefined, "S1 0^-1 and ln(0) are undefined");
+            const auto free = evalText("x + 1");
+            report.add(free.response.status == math_solver::Status::Unsupported && free.response.diagnostics[0].message.find("'x' has no value") != std::string::npos,
+                       "S1 an unbound symbol is reported by name", free.response.diagnostics.empty() ? "" : juce::String(free.response.diagnostics[0].message));
+            const auto integral = evalText("int_0^1 x^2 dx");
+            report.add(integral.response.status == math_solver::Status::Unsupported && integral.response.diagnostics[0].message.find("integration") != std::string::npos,
+                       "S1 an integral is reported as needing an engine that does not exist yet");
+            const auto system = evalText("x &= 1\ny &= 2", Role::System);
+            report.add(system.response.status == math_solver::Status::Unsupported, "S1 a system of equations is reported as unsupported, not as an error");
+            report.add(evalText("1 + ?").response.value.diagnostics[0].code == "incomplete", "S1 an incomplete cell is not evaluated");
+            const auto bad = evalText("(5 \"m\") + (3 \"s\")");
+            report.add(bad.response.status == math_solver::Status::Failed && bad.response.diagnostics[0].code == "dimension-mismatch" && bad.response.diagnostics[0].where.node != 0,
+                       "S1 a dimension error is reported with its source reference and nothing is calculated");
+            report.add(evalText("1 \"furlong\"").response.value.diagnostics[0].code == "unknown-unit", "S1 an unknown unit stops the calculation instead of being dropped");
+        }
+
+        // ---- units and dimensions ----------------------------------------------------------------------------------------------------
+        {
+            const auto length = valueOf("(3 \"mm\") + (2 \"m\")");
+            report.add(std::abs(length.scalar.toDouble() - 2.003) < 1e-12 && length.dim == Dim::base(0), "S1 units convert to SI and keep their dimension");
+            const auto speed = valueOf("36 \"km/h\"");
+            report.add(std::abs(speed.scalar.toDouble() - 10.0) < 1e-12 && speed.dim == math_units::parse("m/s").dim, "S1 36 km/h is 10 m/s");
+            const auto ohm = valueOf("(5 \"V\") / (2 \"A\")");
+            report.add(ohm.dim == math_units::parse("ohm").dim && ohm.describe().find("5/2") == 0, "S1 V/A has the dimension of resistance and stays exact");
+            report.add(valueOf("(3 \"N\") * (2 \"m\")").dim == math_units::parse("J").dim && D("(3 \"N\") * (2 \"m\")").find("6 ") == 0, "S1 N*m is energy");
+            report.add(valueOf("(2 \"m\")^3").dim == Dim::base(0).power(Rational(3)) && valueOf("(2 \"m\")^3").scalar.toDouble() == 8.0, "S1 a power multiplies the dimension");
+            report.add(valueOf("sqrt(9 \"m^2\")").dim == Dim::base(0) && D("sqrt(9 \"m^2\")").find("3 ") == 0, "S1 the root of an area is a length");
+            report.add(valueOf("(10 \"m\") / (4 \"m\")").dim.isDimensionless() && D("(10 \"m\") / (4 \"m\")") == "5/2", "S1 a ratio of lengths is a dimensionless rational");
+            report.add(nearReal("(1 \"kg\") * (9.81 \"m/s^2\") / (1 \"N\")", 9.81, 1e-12) && valueOf("(1 \"kg\") * (9.81 \"m/s^2\") / (1 \"N\")").dim.isDimensionless(), "S1 kg*m/s^2 divided by N is dimensionless");
+
+            Fixture f;
+            f.set("v", Role::Definition, "v = 3 \"m/s\"");
+            f.set("t", Role::Definition, "t = 4 \"s\"");
+            f.set("d", Role::Expression, "v * t");
+            f.set("bad", Role::Expression, "v + t");
+            const auto distance = f.ws.evaluate("d", registry);
+            report.add(distance.response.value.dim == Dim::base(0) && distance.response.value.describe().find("12 ") == 0, "S1 variables carry their units through a calculation", distance.response.value.describe());
+            report.add(f.ws.evaluate("bad", registry).response.diagnostics[0].code == "dimension-mismatch", "S1 mixing the units of two defined variables is a dimension error");
+            const auto shown = math_result::fromValue(distance.response.value, ids, {}, [] { math_result::Options o; o.displayUnit = "km"; return o; }());
+            report.add(math_linear::toLinear(shown.lines).find("0.012") != std::string::npos && math_linear::toLinear(shown.lines).find("km") != std::string::npos, "S1 a result can be shown in a chosen unit", math_linear::toLinear(shown.lines));
+        }
+
+        // ---- vectors and matrices --------------------------------------------------------------------------------------------------
+        report.equal(D("[1,2,3] + [4,5,6]"), "[5, 7, 9]", "S1 vector addition");
+        report.equal(D("2*[1,2,3]"), "[2, 4, 6]", "S1 scalar times vector");
+        report.equal(D("[1,2;3,4]*[5,6]"), "[17, 39]", "S1 matrix times vector");
+        report.equal(D("[1,2;3,4]*[5,6;7,8]"), "[19, 22; 43, 50]", "S1 matrix product");
+        report.equal(D("det([1,2;3,4])"), "-2", "S1 determinant is exact");
+        report.equal(D("([1,2;3,4])^(-1)"), "[-2, 1; 3/2, -1/2]", "S1 the inverse of a rational matrix is exact");
+        report.equal(D("[1,2;3,4]*([1,2;3,4])^(-1)"), "[1, 0; 0, 1]", "S1 a matrix times its inverse is the identity, exactly");
+        report.equal(D("transpose([1,2;3,4])"), "[1, 3; 2, 4]", "S1 transpose");
+        report.equal(D("trace([1,2;3,4])"), "5", "S1 trace");
+        report.equal(D("dot([1,2,3],[4,5,6])"), "32", "S1 dot product");
+        report.equal(D("cross([1,0,0],[0,1,0])"), "[0, 0, 1]", "S1 cross product");
+        report.add(nearReal("norm([3,4])", 5.0), "S1 vector norm");
+        report.equal(D("[1,1;1,0]^10"), "[89, 55; 55, 34]", "S1 a matrix power (Fibonacci)");
+        report.equal(D("[1,2;3,4] - [1,2;3,4]"), "[0, 0; 0, 0]", "S1 matrix subtraction");
+        report.equal(D("[1,2;3,4]/2"), "[1/2, 1; 3/2, 2]", "S1 matrix divided by a scalar");
+        report.add(valueOf("([1,2;2,4])^(-1)").kind == math_value::Kind::Undefined && valueOf("([1,2;2,4])^(-1)").diagnostics[0].code == "singular-matrix", "S1 a singular matrix has no inverse (undefined, not a crash)");
+        report.add(valueOf("([1.5,2;3,5])^(-1)").kind == math_value::Kind::Matrix && !valueOf("([1.5,2;3,5])^(-1)").isExact(), "S1 a floating-point matrix is inverted numerically");
+        report.add(valueOf("det([1+i, 2; 3, 4])").kind == math_value::Kind::Complex, "S1 the determinant of a complex matrix is complex");
+        report.add(evalText("[1,2,3] + [1,2]").response.diagnostics[0].code == "shape-mismatch", "S1 adding vectors of different length is a shape error");
+        report.add(evalText("[1,2]*[3,4]").response.diagnostics[0].code == "vector-product", "S1 the product of two vectors is reported as ambiguous");
+        report.add(evalText("sin([1,2])").response.diagnostics[0].code == "shape-mismatch", "S1 a scalar function of a vector is a shape error");
+        {
+            const auto mv = valueOf("[1,2]*(3 \"m\")");
+            report.add(mv.kind == math_value::Kind::Vector && mv.elements[0].dim == Dim::base(0), "S1 a vector of quantities keeps its unit");
+            Fixture f;
+            f.set("m", Role::Definition, "A = [1,2;3,4]");
+            f.set("e", Role::Expression, "A_(2,1) + A_(1,2)");
+            f.set("s", Role::Expression, "sum_(i=1)^2 A_(i,i)");
+            f.set("w", Role::Expression, "A*A");
+            report.equal(f.ws.evaluate("e", registry).response.value.describe(), "5", "S1 matrix elements are read with A_(i,j)");
+            report.equal(f.ws.evaluate("s", registry).response.value.describe(), "5", "S1 a sum over matrix elements");
+            report.equal(f.ws.evaluate("w", registry).response.value.describe(), "[7, 10; 15, 22]", "S1 a defined matrix is used in a product");
+        }
+
+        // ---- defined variables and functions ----------------------------------------------------------------------------------------
+        {
+            Fixture f;
+            f.set("a", Role::Definition, "a = 3");
+            f.set("b", Role::Definition, "b = a^2 + 1");
+            f.set("f", Role::Definition, "f(x) = x^2 + a");
+            f.set("g", Role::Definition, "g(x, y) = f(x) + y");
+            f.set("c", Role::Expression, "g(2, 1/2) * b");
+            f.set("r", Role::Definition, "r(x) = r(x - 1)");
+            f.set("calls", Role::Expression, "r(2)");
+            f.set("arity", Role::Expression, "f(1, 2)");
+            const auto c = f.ws.evaluate("c", registry);
+            report.equal(c.response.value.describe(), "75", "S1 user-defined functions are evaluated, calling each other and using defined variables");
+            report.add(c.response.provenance.exact, "S1 the answer is exact", c.response.provenance.method);
+            report.add(f.ws.evaluate("calls", registry).response.diagnostics[0].code == "blocked", "S1 a recursive function is a cycle and is never run");
+            report.add(f.ws.evaluate("arity", registry).response.diagnostics[0].code == "arity", "S1 calling a function with the wrong arguments is reported");
+            Fixture h;
+            h.set("p", Role::Definition, "p = 10");
+            h.set("q", Role::Definition, "q = p / 0");
+            h.set("u", Role::Expression, "q + 1");
+            const auto u = h.ws.evaluate("u", registry);
+            report.add(u.response.status != math_solver::Status::Ok || !u.response.value.ok(), "S1 a cell depending on an undefined value does not calculate");
+            bool upstream = false;
+            for (const auto& d : u.response.diagnostics) upstream = upstream || d.code == "upstream-failed";
+            report.add(upstream, "S1 and says which definition could not be computed");
+        }
+
+        // ---- dependency evaluation and recalculation ------------------------------------------------------------------------------
+        {
+            Fixture f;
+            f.set("a", Role::Definition, "a = 3");
+            f.set("b", Role::Definition, "b = a * 2");
+            f.set("c", Role::Expression, "b + 1");
+            f.set("z", Role::Expression, "7");
+            f.set("n", Role::Assumption, "n in Z");
+            const auto first = f.ws.evaluateAll(registry);
+            report.add(first.evaluated.size() == 4 && first.skipped.size() == 1 && first.failed.empty(), "S1 evaluate-all calculates every evaluable cell and skips declarations");
+            const auto stats1 = f.ws.stats();
+            report.add(stats1.evaluations == 4, "S1 each cell was calculated exactly once", juce::String((int) stats1.evaluations));
+            const auto second = f.ws.evaluateAll(registry);
+            report.add(second.evaluated.empty() && second.reused.size() == 4 && f.ws.stats().evaluations == stats1.evaluations, "S1 nothing is recalculated when nothing changed");
+            f.set("a", Role::Definition, "a = 4");
+            report.add(f.ws.outcomeState("c") == math_workspace::OutcomeState::Stale && f.ws.outcomeState("z") == math_workspace::OutcomeState::Current && f.ws.outcomeState("a") == math_workspace::OutcomeState::Stale,
+                       "S1 an edit makes the edited cell and its dependents stale and leaves other cells current");
+            const auto third = f.ws.evaluateAll(registry);
+            report.add(third.evaluated.size() == 3 && third.reused.size() == 1 && f.ws.stats().evaluations == stats1.evaluations + 3, "S1 only the affected cells are recalculated",
+                       juce::String((int) third.evaluated.size()) + " calculated");
+            report.equal(f.ws.evaluate("c", registry).response.value.describe(), "9", "S1 the dependent shows the updated value");
+            f.set("z", Role::Expression, "8");
+            const auto before = f.ws.stats().evaluations;
+            f.ws.evaluateAll(registry);
+            report.add(f.ws.stats().evaluations == before + 1, "S1 editing an unrelated cell recalculates only that cell");
+
+            const auto oldTicket = f.ws.ticket("c");
+            f.set("b", Role::Definition, "b = a * 3");
+            report.add(!f.ws.submitResult(oldTicket, math_value::Value::integer(0)) && f.ws.outcomeState("c") == math_workspace::OutcomeState::Stale, "S1 a late result for an obsolete revision is rejected");
+            f.ws.evaluateAll(registry);
+            report.equal(f.ws.evaluate("c", registry).response.value.describe(), "13", "S1 and the up-to-date result replaces it");
+
+            Fixture cyc;
+            cyc.set("a", Role::Definition, "a = b + 1");
+            cyc.set("b", Role::Definition, "b = a + 1");
+            cyc.set("c", Role::Expression, "a * 2");
+            const auto batch = cyc.ws.evaluateAll(registry);
+            report.add(batch.failed.size() == 3 && cyc.ws.outcomeState("a") == math_workspace::OutcomeState::Blocked, "S1 cells in or behind a cycle are blocked, not calculated");
+            cyc.set("b", Role::Definition, "b = 1");
+            const auto healed = cyc.ws.evaluateAll(registry);
+            report.add(healed.failed.empty() && cyc.ws.evaluate("c", registry).response.value.describe() == "4", "S1 breaking the cycle lets the cells calculate");
+
+            Fixture slow;
+            slow.set("s", Role::Expression, "sum_(i=1)^900000 i");
+            math_workspace::EvaluateOptions limited;
+            limited.timeoutMs = 1;
+            const auto timedOut = slow.ws.evaluate("s", registry, limited);
+            report.add(timedOut.response.status == math_solver::Status::TimedOut, "S1 a long calculation stops at its deadline");
+            math_workspace::EvaluateOptions cancelled;
+            cancelled.cancel = std::make_shared<math_solver::CancelToken>();
+            cancelled.cancel->request();
+            Fixture quick;
+            quick.set("s", Role::Expression, "1 + 1");
+            report.add(quick.ws.evaluate("s", registry, cancelled).response.status == math_solver::Status::Cancelled, "S1 a cancelled calculation is reported as cancelled");
+            report.add(quick.ws.evaluate("s", registry).response.value.describe() == "2" && quick.ws.stats().evaluations == 2, "S1 an interrupted calculation is retried, not reused");
+        }
+
+        // ---- the worksheet: results beside expressions ----------------------------------------------------------------------------------
+        {
+            auto doc = std::make_shared<WorksheetDocument>();
+            doc->reset();
+            math_workspace::Workspace ws;
+            WorksheetPanel panel(doc);
+            panel.setBounds(0, 0, 1100, 900);
+            std::vector<std::string> commandsRun;
+            panel.runCommand = [&](const std::string& name, const juce::var& args) {
+                commandsRun.push_back(name);
+                return math_commands::execute(name, args, *doc, ws);
+            };
+            panel.setMathWorkspace(&ws);
+            panel.setAutoEvaluate(false);
+            const auto a = panel.addMathCell(Role::Definition, "a = 3 \"m\"");
+            const auto b = panel.addMathCell(Role::Expression, "a * 2 + 50 \"cm\"");
+            const auto err = panel.addMathCell(Role::Expression, "(1 \"m\") + (2 \"s\")");
+            const auto open = panel.addMathCell(Role::Expression, "x + 1");
+            const auto empty = panel.addMathCell(Role::Expression, {});
+            const auto heightBefore = panel.cellHeight(b);
+            const auto expressionBefore = juce::JSON::toString(math_doc::toVar(doc->cells[(size_t) doc->indexOf(b)].math));
+            report.add(!panel.resultOf(b).visible, "S1 a cell shows no result until it has been calculated");
+            panel.evaluateWorksheet();
+            const auto rb = panel.resultOf(b);
+            report.add(rb.visible && rb.isValue && !rb.stale && rb.status.contains("calculated") && rb.status.contains("approximate"), "S1 a calculated cell shows its result with its status", rb.status);
+            report.add(panel.cellHeight(b) > heightBefore && rb.height >= 70, "S1 the cell makes room for the result", juce::String(heightBefore) + " -> " + juce::String(panel.cellHeight(b)));
+            report.add(juce::JSON::toString(math_doc::toVar(doc->cells[(size_t) doc->indexOf(b)].math)) == expressionBefore, "S1 the user's expression is untouched by calculating it");
+            const auto re = panel.resultOf(err);
+            report.add(re.visible && !re.isValue && re.text.contains("dimension"), "S1 an error is shown in the result area without disturbing the worksheet", re.text);
+            const auto ro = panel.resultOf(open);
+            report.add(ro.visible && !ro.isValue && ro.text.contains("'x' has no value") && ro.status.contains("not calculated"), "S1 an unsupported expression says what is missing", ro.text);
+            report.add(!panel.resultOf(empty).visible, "S1 an empty cell shows no result");
+            report.add(std::find(commandsRun.begin(), commandsRun.end(), "worksheet_math_evaluate_all") != commandsRun.end(), "S1 the worksheet calculates through the command service");
+            commandsRun.clear();
+            panel.evaluateCell(a);
+            report.add(commandsRun.size() == 1 && commandsRun[0] == "worksheet_math_evaluate", "S1 the Evaluate button uses the same command as the agent tool");
+
+            const auto results = juce::JSON::parse(math_commands::execute("worksheet_math_results", juce::var(new juce::DynamicObject()), *doc, ws));
+            juce::String typeset;
+            if (auto* list = results["cells"].getArray()) for (const auto& c : *list) if (c["id"].toString() == b) typeset = c["typeset"].toString();
+            report.add(typeset.contains("6.5") && typeset.contains("m"), "S1 the calculated value is 6.5 m", typeset);
+
+            panel.setDisplay(b, "cm", 6);
+            report.add(panel.resultOf(b).unit == "cm" && panel.resultOf(b).digits == 6 && doc->cells[(size_t) doc->indexOf(b)].displayUnit == "cm", "S1 the display unit and digits are chosen per cell");
+            const auto shown = juce::JSON::parse(math_commands::execute("worksheet_math_results", juce::var(new juce::DynamicObject()), *doc, ws));
+            juce::String shownText;
+            if (auto* list = shown["cells"].getArray()) for (const auto& c : *list) if (c["id"].toString() == b) shownText = c["typeset"].toString();
+            report.add(shownText.contains("650") && shownText.contains("cm"), "S1 the result is shown in the chosen unit (650 cm)", shownText);
+
+            panel.setCell(a, "a = 5 \"m\"");
+            report.add(panel.resultOf(b).stale && panel.resultOf(b).status.contains("outdated"), "S1 editing a definition marks the dependent results outdated");
+            const auto beforeRuns = ws.stats().evaluations;
+            panel.evaluateWorksheet();
+            report.add(!panel.resultOf(b).stale && ws.stats().evaluations - beforeRuns <= 4, "S1 evaluating again refreshes them", juce::String((int) (ws.stats().evaluations - beforeRuns)));
+            const auto updated = juce::JSON::parse(math_commands::execute("worksheet_math_results", juce::var(new juce::DynamicObject()), *doc, ws));
+            juce::String updatedText;
+            if (auto* list = updated["cells"].getArray()) for (const auto& c : *list) if (c["id"].toString() == b) updatedText = c["typeset"].toString();
+            report.add(updatedText.contains("1050"), "S1 the dependent now shows 1050 cm", updatedText);
+
+            // automatic recalculation after a pause
+            panel.setAutoEvaluate(true);
+            panel.setCell(a, "a = 1 \"m\"");
+            report.add(panel.resultOf(b).stale && panel.recalculationPending(), "S1 with Auto on the result is outdated and a recalculation is waiting for the pause to end");
+            panel.flushRecalculation();
+            report.add(!panel.resultOf(b).stale, "S1 with Auto on the dependent recalculates by itself after an edit");
+            panel.setAutoEvaluate(false);
+
+            // results are not saved; the view preferences are
+            const auto file = work.getChildFile("s1.djmath");
+            juce::String error;
+            doc->save(file, error);
+            const auto text = file.loadFileAsString();
+            report.add(!text.contains("djehuti.reference") && !text.contains("approximate") && text.contains("\"view\"") && text.contains("\"cm\""), "S1 no result is written to the worksheet file, only the view preference");
+            WorksheetDocument reopened;
+            report.add(reopened.load(file, error), "S1 the worksheet reopens", error);
+            const int index = reopened.indexOf(b);
+            report.add(index >= 0 && reopened.cells[(size_t) index].displayUnit == "cm" && reopened.cells[(size_t) index].displayDigits == 6, "S1 the display preference survives save and reopen");
+            report.add(reopened.cells[(size_t) reopened.indexOf(a)].displayDigits == 15 && reopened.cells[(size_t) reopened.indexOf(a)].displayUnit.isEmpty(), "S1 cells without a preference keep the defaults");
+            math_workspace::Workspace fresh;
+            math_commands::sync(reopened, fresh);
+            const auto again = fresh.evaluateAll(registry);
+            report.add(again.failed.size() == 2 && again.evaluated.size() >= 4, "S1 a reopened worksheet calculates to the same results", juce::String((int) again.failed.size()) + " failed");
+        }
+
+        // ---- the command service ------------------------------------------------------------------------------------------------------
+        {
+            WorksheetDocument doc;
+            doc.reset();
+            std::vector<std::string> notes;
+            const auto a = doc.newMathCell(Role::Definition, "a = 3", notes);
+            const auto b = doc.newMathCell(Role::Expression, "a + 1", notes);
+            math_workspace::Workspace ws;
+            auto call = [&](const char* name, juce::DynamicObject* args) { return juce::JSON::parse(math_commands::execute(name, juce::var(args), doc, ws)); };
+            const auto all = call("worksheet_math_evaluate_all", new juce::DynamicObject());
+            report.add((bool) all["ok"] || all["failed"].size() > 0, "S1 worksheet_math_evaluate_all reports what it did");
+            report.add((int) all["stats"]["cellsComputed"] >= 2, "S1 and counts the cells it calculated");
+            const auto again = call("worksheet_math_evaluate_all", new juce::DynamicObject());
+            report.add((int) again["stats"]["engineRuns"] == 0 && again["reused"].size() >= 2, "S1 calling it again recalculates nothing");
+            auto* forced = new juce::DynamicObject();
+            forced->setProperty("force", true);
+            report.add((int) call("worksheet_math_evaluate_all", forced)["stats"]["engineRuns"] >= 2, "S1 force recalculates everything");
+            auto* one = new juce::DynamicObject();
+            one->setProperty("id", b);
+            one->setProperty("digits", 5);
+            const auto single = call("worksheet_math_evaluate", one);
+            report.add((bool) single["ok"] && single["value"].toString() == "4" && (bool) single["reused"], "S1 worksheet_math_evaluate reuses a current result");
+            report.add(doc.cells[(size_t) doc.indexOf(b)].displayDigits == 5, "S1 digits chosen through the command are kept with the cell");
+            auto* idOnly = new juce::DynamicObject();
+            idOnly->setProperty("id", a);
+            const auto row = call("worksheet_math_results", idOnly);
+            report.add(row["cells"].size() == 1 && row["cells"][0]["state"].toString() == "current" && row["cells"][0]["value"].toString() == "3", "S1 worksheet_math_results reads a stored result without calculating");
+            report.add(math_commands::handles("worksheet_math_evaluate_all") && math_commands::handles("worksheet_math_results"), "S1 the new commands are part of the command set");
+        }
+
+        // ---- existing worksheets keep working ------------------------------------------------------------------------------------------
+#ifdef DJEHUTIMATH_SOURCE_ROOT
+        {
+            const juce::File demo = juce::File(DJEHUTIMATH_SOURCE_ROOT).getChildFile("examples/equations-demo.djmath");
+            if (demo.existsAsFile())
+            {
+                WorksheetDocument old;
+                juce::String error;
+                report.add(old.load(demo, error), "S1 a worksheet saved before S1 opens", error);
+                math_workspace::Workspace oldWs;
+                math_commands::sync(old, oldWs);
+                const auto batch = oldWs.evaluateAll(registry);
+                bool noDisplayPrefs = true;
+                for (const auto& cell : old.cells) noDisplayPrefs = noDisplayPrefs && cell.displayUnit.isEmpty() && cell.displayDigits == 15;
+                report.add(noDisplayPrefs && !batch.evaluated.empty(), "S1 and calculates what it can (symbolic cells are reported, not failed)", juce::String((int) batch.evaluated.size()) + " cells");
+            }
         }
 #endif
     }

@@ -134,3 +134,28 @@ Worksheet order does not matter. A cell depends on every cell that defines or de
 - Operand capture of `/` still applies: write `(10 "N") / (2 "m^2")` to divide a quantity.
 - Assumed defaults to confirm: undeclared symbols are real with unknown dimension; `log` means base 10, `ln` natural.
 - Results are not yet shown in worksheet cells; there is no GUI for them (S0 scope).
+
+## S1 - Numerical evaluation and worksheet results
+
+Branch `feature/s1-numerical-worksheet`. No solver library integrated (no SymEngine, SymPy, Eigen, SUNDIALS); the reference evaluator is still the only engine.
+
+### Evaluator (`MathSolver.cpp`, no JUCE)
+Values are scalars, vectors or matrices (`Val`). Exact rational arithmetic where practical, with an exact-to-float fallback and a warning on 64-bit overflow. Complex numbers are kept complex (`i^2 = -1+0i` is a Complex value, never silently real); `sqrt(-4)` is exactly `2i`; `asin(2)`, `ln(-1)` return principal complex values. Functions: sin cos tan cot sec csc asin acos atan sinh cosh tanh coth exp ln log(base 10) abs floor ceil sign min max re im conj arg; vectors/matrices: `+ - * /scalar ^n ^(-1)` (exact Gauss-Jordan, float LU fallback, singular -> Undefined), det, trace, transpose, norm, dot, cross, element access `A_(i,j)`; user-defined functions (called with their definition from other cells, depth-limited); sums/products with whole-number bounds; relations. Units are converted to SI and dimensions checked (also in the frontend, before calculation). Every refusal says why (`whyNot`): an unbound symbol is named, integrals/derivatives/systems say a later engine is needed.
+
+### Worksheet (`WorksheetPanel`, `MathWorkspace`, `MathCommands`)
+- Each math cell has a result area under its typeset expression: tinted green, a status line (exact/approximate, calculated/outdated/undefined/error/not calculated), the value typeset with the existing layout, a unit box and a digits selector. Results are never saved; only the unit and digits are (`"view"` on the cell, optional, version 2 files without it load unchanged).
+- A dimensioned result is shown in the named SI unit that has its dimension (V, Ω, N, J, W, C, F, S, H, T, Wb, Pa) or in base units; the unit box converts (mV, km/h, cm).
+- Buttons: per-cell **Evaluate** (forces recalculation), **Evaluate all**, **Auto**. With Auto on, an edit schedules a recalculation after 350 ms; only cells whose revision or dependencies changed are recalculated (`Workspace::stats()` counts engine runs; tests assert it). Cycles block the cell and everything behind it; a late or interrupted result is rejected or retried (tickets, `Outcome` state Current/Stale/Blocked).
+- The UI and the agent use the same commands: `worksheet_math_evaluate` (id, display_unit, digits, force, operation), `worksheet_math_evaluate_all`, `worksheet_math_results`, plus the S0 analysis tools. The panel's buttons call `runCommand` -> `DjehutiMath::dispatch`.
+- Frontend additions: `sin(x)^2` means `(sin x)^2`; `A_(i,j)` element access; re/im/conj/arg/dot/cross; scalar functions of a vector are a shape error.
+
+### Verified (Debug)
+`--mathir-check`: 350/350 (S0 220 + S1 130: numerical correctness, rational and complex arithmetic, units and dimension errors, vectors and matrices, user functions, recalculation counts, stale/late rejection, cycles, deadline and cancellation, panel result rendering, display unit/digits, Auto, save/reopen, an S0-era file). `--math-check` 43/43, `--foundation-check` 7/7, `--dsp-check` pass.
+GUI: results, status lines, exact complex and matrix results, V/R = 3 A and the automatic update to 6 A and 144 W after changing V were seen in the running application. Limit of that evidence: Windows' touch-keyboard host (TextInputHost) held the foreground during the final session, so the last demonstration drove the worksheet through the local agent API (same command service) while the real window was photographed; the per-cell buttons, unit box and Auto toggle were operated by mouse in an earlier run of the same build (before two small fixes: Return in the unit box, and the Ω glyph bytes). Those two fixes are covered by checks, not by a repeat mouse run.
+
+### Limits
+- Only the reference evaluator: no simplify, solve, differentiate or integrate; a cell that needs one says so. Systems of equations are "not calculated".
+- Precision is IEEE double (digits control display only); arbitrary precision comes with a later engine.
+- Matrices display as bracketed lists; element access needs a defined matrix or vector.
+- A function-definition cell shows no result. An Assumption cell shows none.
+- Auto uses a 5 s per-run deadline; very large sums stop with "ran out of time".

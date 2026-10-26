@@ -1,6 +1,9 @@
 #include "WorksheetPanel.h"
 #include "MathLinear.h"
 #include "MathView.h"
+#include "MathResult.h"
+#include "MathWorkspace.h"
+#include "MathCommands.h"
 #include <set>
 
 namespace
@@ -9,6 +12,16 @@ constexpr auto starter = "pub fn run() -> String = {\n    let value: f64 = 6.0 *
 constexpr auto starterMath = "f(x) = sqrt(x^2+1)/(x+3)";
 constexpr int maxSource = 100000;
 const juce::Colour accent(0xff78dcca);
+const juce::Colour resultBackground(0xff0e2a27), resultForeground(0xffc9f7ec), noteColour(0xff9fb3c8), errorColour(0xffff9d6e), staleColour(0xffe0b070);
+
+// What a math cell's result area shows. Built from the workspace's outcome for the cell, never from the document.
+struct ResultDisplay
+{
+    enum Kind { None, Value, Note, Error } kind = None;
+    std::vector<math_doc::NodePtr> lines;
+    juce::String text, status, key;
+    bool stale = false, unchanged = false;
+};
 
 void style(juce::TextEditor& editor)
 {
@@ -58,6 +71,11 @@ juce::var WorksheetDocument::toJson() const
             item->setProperty("math", math_doc::toVar(cell.math));
             auto* origin = new juce::DynamicObject(); origin->setProperty("format", "linear"); origin->setProperty("text", cell.source);
             item->setProperty("origin", juce::var(origin));
+            if (cell.displayUnit.isNotEmpty() || cell.displayDigits != 15)
+            {
+                auto* view = new juce::DynamicObject(); view->setProperty("unit", cell.displayUnit); view->setProperty("digits", cell.displayDigits);
+                item->setProperty("view", juce::var(view));
+            }
         }
         else
             item->setProperty("source", cell.source);
@@ -88,6 +106,12 @@ bool WorksheetDocument::load(const juce::File& file, juce::String& error)
             juce::String why;
             if (!math_doc::fromVar(value["math"], allocator, seenNodes, cell.math, why)) { error = "Invalid math cell: " + why; return false; }
             if (cell.source.isEmpty()) cell.source = juce::String::fromUTF8(math_linear::toLinear(cell.math.lines).c_str());
+            if (value["view"].isObject())
+            {
+                cell.displayUnit = value["view"]["unit"].toString().substring(0, 40);
+                const int digits = (int) value["view"]["digits"];
+                cell.displayDigits = digits >= 3 && digits <= 17 ? digits : 15;
+            }
         }
         if (cell.source.length() > maxSource) { error = "Invalid or duplicate worksheet cell."; return false; }
         candidate.push_back(std::move(cell));
@@ -183,6 +207,20 @@ public:
             info.setColour(juce::Label::textColourId, juce::Colour(0xff7f93a8)); info.setFont(juce::Font("Consolas", 12.0f, juce::Font::plain)); info.setJustificationType(juce::Justification::centredRight); addAndMakeVisible(info);
             view.onHover = [this](const juce::String& text) { info.setText(text, juce::dontSendNotification); };
             addAndMakeVisible(view);
+            evaluate.setButtonText("Evaluate"); evaluate.setTooltip("Calculate this cell and the definitions it needs");
+            evaluate.onClick = [this] { owner.evaluateCell(id); };
+            addAndMakeVisible(evaluate);
+            resultView.setAppearance(resultBackground, resultForeground); resultView.onHover = view.onHover;
+            resultView.setVisible(false); addChildComponent(resultView);
+            status.setFont(juce::Font(12.5f)); status.setColour(juce::Label::textColourId, juce::Colour(0xff7fd6c2)); addChildComponent(status);
+            resultMessage.setFont(juce::Font(13.5f)); resultMessage.setMinimumHorizontalScale(1.0f); addChildComponent(resultMessage);
+            unitBox.setTextToShowWhenEmpty("unit", juce::Colour(0xff64748b)); unitBox.setTooltip("Show the result in this unit, e.g. mV or km/h");
+            style(unitBox); unitBox.setMultiLine(false); unitBox.setReturnKeyStartsNewLine(false); addChildComponent(unitBox);
+            auto applyDisplay = [this] { owner.setDisplay(id, unitBox.getText().trim(), digitsBox.getSelectedId()); };
+            unitBox.onReturnKey = applyDisplay; unitBox.onFocusLost = applyDisplay;
+            for (int d : { 4, 6, 10, 15 }) digitsBox.addItem(juce::String(d) + " digits", d);
+            digitsBox.setSelectedId(15, juce::dontSendNotification); digitsBox.setTooltip("Significant digits shown"); digitsBox.onChange = applyDisplay;
+            addChildComponent(digitsBox);
         }
         else
         {
@@ -209,6 +247,8 @@ public:
                 if (cell.math.role == math_doc::Role::System) source.setTextToShowWhenEmpty("One equation per line; mark the alignment point with &", juce::Colour(0xff64748b));
             }
             role.setSelectedId((int) cell.math.role + 1, juce::dontSendNotification);
+            if (unitBox.getText() != cell.displayUnit && !unitBox.hasKeyboardFocus(true)) unitBox.setText(cell.displayUnit, false);
+            digitsBox.setSelectedId(cell.displayDigits, juce::dontSendNotification);
         }
         else if (output.getText() != cell.output)
             output.setText(cell.output, false);
@@ -225,7 +265,33 @@ public:
         if (!isMath) return isCode ? 300 : 165;
         const bool system = shownRole == math_doc::Role::System;
         const int input = system ? juce::jlimit(60, 200, 22 + 20 * std::max(2, source.getText().isEmpty() ? 2 : juce::StringArray::fromLines(source.getText()).size())) : 34;
-        return 14 + 30 + 6 + input + 6 + std::max(64, view.preferredHeight()) + (notesList.isEmpty() ? 0 : 22) + 14;
+        return 14 + 30 + 6 + input + 6 + std::max(64, view.preferredHeight()) + resultBlockHeight() + (notesList.isEmpty() ? 0 : 22) + 14;
+    }
+
+    int resultBlockHeight() const
+    {
+        if (shownKind == ResultDisplay::None) return 0;
+        return 8 + 26 + (shownKind == ResultDisplay::Value ? std::max(46, resultView.preferredHeight()) : 44);
+    }
+
+    // Shows the result described by `r`. True when the height of the cell changed.
+    bool showResult(const ResultDisplay& r)
+    {
+        if (r.unchanged || (r.key == resultKey && r.kind == shownKind)) return false;
+        const int before = resultBlockHeight();
+        resultKey = r.key; shownKind = r.kind;
+        const bool value = r.kind == ResultDisplay::Value, any = r.kind != ResultDisplay::None;
+        if (value) { resultView.setContent(r.lines, math_doc::Role::Expression); resultView.setDimmed(r.stale); }
+        resultView.setVisible(value);
+        resultMessage.setVisible(any && !value);
+        resultMessage.setText(r.text, juce::dontSendNotification);
+        resultMessage.setColour(juce::Label::textColourId, r.kind == ResultDisplay::Error ? errorColour : noteColour);
+        status.setVisible(any); status.setText(r.status, juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, r.stale ? staleColour : r.kind == ResultDisplay::Error ? errorColour : juce::Colour(0xff7fd6c2));
+        unitBox.setVisible(value); digitsBox.setVisible(value);
+        shownStale = r.stale; shownText = r.text; shownStatus = r.status;
+        resized(); repaint();
+        return before != resultBlockHeight() || true;
     }
 
     void setOutput(const juce::String& text) { output.setText(text, false); }
@@ -242,13 +308,25 @@ public:
         if (isMath)
         {
             role.setBounds(bar.removeFromRight(180).reduced(0, 2));
-            info.setBounds(bar.removeFromRight(260));
+            bar.removeFromRight(6);
+            evaluate.setBounds(bar.removeFromRight(84).reduced(0, 2));
+            info.setBounds(bar.removeFromRight(240));
             title.setBounds(bar);
             a.removeFromTop(6);
             const bool system = shownRole == math_doc::Role::System;
             source.setBounds(a.removeFromTop(system ? juce::jlimit(60, 200, 22 + 20 * std::max(2, juce::StringArray::fromLines(source.getText()).size())) : 34));
             a.removeFromTop(6);
             if (!notesList.isEmpty()) notes.setBounds(a.removeFromBottom(22)); else notes.setBounds({});
+            if (shownKind != ResultDisplay::None)
+            {
+                auto block = a.removeFromBottom(resultBlockHeight());
+                block.removeFromTop(8);
+                auto head = block.removeFromTop(26);
+                digitsBox.setBounds(head.removeFromRight(104).reduced(0, 1)); head.removeFromRight(6);
+                unitBox.setBounds(head.removeFromRight(96).reduced(0, 1)); head.removeFromRight(8);
+                status.setBounds(head);
+                resultView.setBounds(block); resultMessage.setBounds(block.reduced(8, 2));
+            }
             view.setBounds(a);
             return;
         }
@@ -259,7 +337,10 @@ public:
 
     WorksheetPanel& owner; juce::String id, kind; bool isCode, isMath; int ordinal;
     juce::Label title, notes, info; juce::TextEditor source, output; juce::TextButton run;
-    juce::ComboBox role; MathView view;
+    juce::ComboBox role, digitsBox; MathView view, resultView;
+    juce::TextButton evaluate;
+    juce::Label status, resultMessage; juce::TextEditor unitBox;
+    ResultDisplay::Kind shownKind = ResultDisplay::None; juce::String resultKey, shownText, shownStatus; bool shownStale = false;
     juce::StringArray notesList;
     std::uint64_t shownRevision = 0; math_doc::Role shownRole = math_doc::Role::Expression;
 };
@@ -273,6 +354,10 @@ WorksheetPanel::WorksheetPanel(std::shared_ptr<WorksheetDocument> value) : docum
     addMath.onClick = [this] { addMathCell(math_doc::Role::Expression, {}); };
     stop.onClick = [] { std::string ignored; frust_exec::Executor::instance().stop(ignored); };
     addAndMakeVisible(addMath); addAndMakeVisible(addCode); addAndMakeVisible(addNote); addAndMakeVisible(stop);
+    evaluateAll.setTooltip("Calculate every math cell whose result is out of date"); evaluateAll.onClick = [this] { evaluateWorksheet(); };
+    autoButton.setToggleState(true, juce::dontSendNotification); autoButton.setTooltip("Recalculate automatically after edits");
+    autoButton.onClick = [this] { setAutoEvaluate(autoButton.getToggleState()); };
+    addAndMakeVisible(evaluateAll); addAndMakeVisible(autoButton);
     viewport.setViewedComponent(&canvas, false); viewport.setScrollBarsShown(true, false); addAndMakeVisible(viewport);
     listener = frust_exec::Executor::instance().addListener([this](const frust_exec::Snapshot&) { executionChanged(); });
     juce::Desktop::getInstance().addFocusChangeListener(this);
@@ -286,7 +371,7 @@ WorksheetPanel::~WorksheetPanel()
 void WorksheetPanel::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff101720)); }
 void WorksheetPanel::resized()
 {
-    auto a = getLocalBounds().reduced(22); auto bar = a.removeFromTop(34); stop.setBounds(bar.removeFromRight(64)); bar.removeFromRight(8); addNote.setBounds(bar.removeFromRight(88)); bar.removeFromRight(8); addCode.setBounds(bar.removeFromRight(112)); bar.removeFromRight(8); addMath.setBounds(bar.removeFromRight(96)); heading.setBounds(bar); subtitle.setBounds(a.removeFromTop(27)); a.removeFromTop(12); viewport.setBounds(a);
+    auto a = getLocalBounds().reduced(22); auto bar = a.removeFromTop(34); stop.setBounds(bar.removeFromRight(64)); bar.removeFromRight(8); autoButton.setBounds(bar.removeFromRight(64)); bar.removeFromRight(6); evaluateAll.setBounds(bar.removeFromRight(104)); bar.removeFromRight(8); addNote.setBounds(bar.removeFromRight(88)); bar.removeFromRight(8); addCode.setBounds(bar.removeFromRight(112)); bar.removeFromRight(8); addMath.setBounds(bar.removeFromRight(96)); heading.setBounds(bar); subtitle.setBounds(a.removeFromTop(27)); a.removeFromTop(12); viewport.setBounds(a);
     layoutCells();
 }
 void WorksheetPanel::layoutCells()
@@ -321,6 +406,7 @@ void WorksheetPanel::rebuild()
     components = std::move(next);          // cells that are gone are destroyed here
     if (find(selectedId) == nullptr) selectedId.clear();
     layoutCells();
+    scheduleRecalculation();
 }
 juce::String WorksheetPanel::addCell(const juce::String& kind, const juce::String& source)
 {
@@ -360,6 +446,7 @@ bool WorksheetPanel::setMathRole(const juce::String& id, math_doc::Role role)
 {
     std::vector<std::string> notes;
     if (!document->setMathRole(id, role, notes)) return false;
+    scheduleRecalculation();
     rebuild();
     if (auto* cell = find(id)) { juce::StringArray list; for (const auto& n : notes) list.add(juce::String::fromUTF8(n.c_str())); cell->setMathNotes(list); layoutCells(); }
     if (onChanged) onChanged();
@@ -367,6 +454,7 @@ bool WorksheetPanel::setMathRole(const juce::String& id, math_doc::Role role)
 }
 void WorksheetPanel::mathTextChanged(const juce::String& id, const juce::String& text)
 {
+    scheduleRecalculation();
     std::vector<std::string> notes;
     const bool applied = document->setMathSource(id, text, notes);
     juce::StringArray list; for (const auto& n : notes) list.add(juce::String::fromUTF8(n.c_str()));
@@ -377,6 +465,7 @@ void WorksheetPanel::mathTextChanged(const juce::String& id, const juce::String&
         cell->setMathNotes(list);
     }
     layoutCells();
+    refreshResults();
     if (applied && onChanged) onChanged();
 }
 void WorksheetPanel::revealCell(const juce::String& id)
@@ -416,4 +505,144 @@ void WorksheetPanel::executionChanged()
     const int i = document->indexOf(runningCell);
     if (i >= 0 && document->cells[(size_t)i].source == runningSource) { document->cells[(size_t)i].output = text; if (auto* cell = find(runningCell)) cell->setOutput(text); }
     if (!frust_exec::isActive(snap.state)) runningSession = 0;
+}
+
+
+// ---- calculated results ----------------------------------------------------------------------------------------------------
+void WorksheetPanel::setMathWorkspace(math_workspace::Workspace* value) { workspace = value; scheduleRecalculation(); }
+
+void WorksheetPanel::scheduleRecalculation()
+{
+    if (workspace != nullptr && autoEvaluating && runCommand != nullptr) startTimer(350);
+}
+
+void WorksheetPanel::timerCallback()
+{
+    stopTimer();
+    if (workspace != nullptr && autoEvaluating) evaluateWorksheet();
+}
+
+void WorksheetPanel::setAutoEvaluate(bool shouldEvaluate)
+{
+    autoEvaluating = shouldEvaluate;
+    autoButton.setToggleState(shouldEvaluate, juce::dontSendNotification);
+    if (shouldEvaluate) scheduleRecalculation(); else stopTimer();
+    refreshResults();
+}
+
+void WorksheetPanel::evaluateWorksheet()
+{
+    if (runCommand == nullptr || workspace == nullptr) return;
+    stopTimer();
+    runCommand("worksheet_math_evaluate_all", juce::var(new juce::DynamicObject()));
+    refreshResults();
+}
+
+void WorksheetPanel::evaluateCell(const juce::String& id)
+{
+    if (runCommand == nullptr || workspace == nullptr) return;
+    auto* args = new juce::DynamicObject();
+    args->setProperty("id", id);
+    args->setProperty("force", true);
+    runCommand("worksheet_math_evaluate", juce::var(args));
+    refreshResults();
+}
+
+void WorksheetPanel::setDisplay(const juce::String& id, const juce::String& unit, int digits)
+{
+    const int i = document->indexOf(id);
+    if (i < 0) return;
+    auto& cell = document->cells[(size_t) i];
+    const int clamped = digits >= 3 && digits <= 17 ? digits : 15;
+    if (cell.displayUnit == unit && cell.displayDigits == clamped) return;
+    cell.displayUnit = unit; cell.displayDigits = clamped;
+    document->modified = true;
+    refreshResults();
+    if (onChanged) onChanged();
+}
+
+namespace
+{
+ResultDisplay describeResult(math_workspace::Workspace* workspace, const WorksheetCell& cell, const juce::String& shownKey)
+{
+    ResultDisplay r;
+    if (workspace == nullptr || cell.kind != "math" || cell.source.trim().isEmpty() || !workspace->has(cell.id.toStdString())) return r;
+    const auto id = cell.id.toStdString();
+    const auto state = workspace->outcomeState(id);
+    const auto* outcome = workspace->outcome(id);
+    if (state == math_workspace::OutcomeState::Blocked)
+    {
+        r.kind = ResultDisplay::Error; r.status = "blocked";
+        r.text = "Circular definition: this cell cannot be calculated until the cycle is broken.";
+        r.key = "blocked";
+        return r;
+    }
+    if (outcome == nullptr) return r;
+    r.stale = state == math_workspace::OutcomeState::Stale;
+    r.key = juce::String((juce::int64) outcome->sequence) + (r.stale ? "s" : "c") + "|" + cell.displayUnit + "|" + juce::String(cell.displayDigits);
+    if (r.key == shownKey) { r.unchanged = true; return r; }
+    const auto& response = outcome->response;
+    const auto message = juce::String::fromUTF8(response.diagnostics.empty() ? response.value.diagnostics.empty() ? "" : response.value.diagnostics[0].message.c_str()
+                                                                            : response.diagnostics[0].message.c_str());
+    if (response.status == math_solver::Status::Ok && response.value.ok())
+    {
+        math_doc::IdAllocator ids;
+        math_result::Options options;
+        options.displayUnit = cell.displayUnit.toStdString();
+        options.significantDigits = cell.displayDigits;
+        const auto tree = math_result::fromValue(response.value, ids, {}, options);
+        r.kind = ResultDisplay::Value;
+        r.lines = tree.lines;
+        r.status = juce::String(response.provenance.exact ? "exact" : "approximate") + juce::String::fromUTF8("  ·  ") + (r.stale ? "outdated" : "calculated");
+        if (!tree.problem.empty()) r.status += juce::String::fromUTF8("  ·  ") + juce::String::fromUTF8(tree.problem.c_str());
+        return r;
+    }
+    if (response.status == math_solver::Status::Ok)          // a value that is undefined: a result of the mathematics
+    {
+        r.kind = ResultDisplay::Error; r.status = r.stale ? "undefined  ·  outdated" : "undefined";
+        r.text = "Undefined: " + message;
+        return r;
+    }
+    if (response.status == math_solver::Status::Unsupported || response.status == math_solver::Status::Cancelled || response.status == math_solver::Status::TimedOut)
+    {
+        r.kind = ResultDisplay::Note; r.status = r.stale ? "not calculated  ·  outdated" : "not calculated";
+        r.text = message.isEmpty() ? juce::String("This expression cannot be calculated here yet.") : message;
+        return r;
+    }
+    r.kind = ResultDisplay::Error; r.status = r.stale ? "error  ·  outdated" : "error";
+    r.text = message;
+    return r;
+}
+}
+
+void WorksheetPanel::refreshResults()
+{
+    if (workspace != nullptr) math_commands::sync(*document, *workspace);
+    bool changed = false;
+    for (auto& cell : components)
+    {
+        if (!cell->isMath) continue;
+        const int i = document->indexOf(cell->id);
+        if (i < 0) continue;
+        if (cell->unitBox.getText() != document->cells[(size_t) i].displayUnit && !cell->unitBox.hasKeyboardFocus(true)) cell->unitBox.setText(document->cells[(size_t) i].displayUnit, false);
+        cell->digitsBox.setSelectedId(document->cells[(size_t) i].displayDigits, juce::dontSendNotification);
+        changed = cell->showResult(describeResult(workspace, document->cells[(size_t) i], cell->resultKey)) || changed;
+    }
+    if (changed) layoutCells();
+}
+
+WorksheetPanel::ResultView WorksheetPanel::resultOf(const juce::String& id) const
+{
+    ResultView v;
+    const auto* cell = find(id);
+    if (cell == nullptr) return v;
+    v.visible = cell->shownKind != ResultDisplay::None;
+    v.isValue = cell->shownKind == ResultDisplay::Value;
+    v.stale = cell->shownStale;
+    v.text = cell->shownText;
+    v.status = cell->shownStatus;
+    v.unit = cell->unitBox.getText();
+    v.digits = cell->digitsBox.getSelectedId();
+    v.height = cell->resultBlockHeight();
+    return v;
 }

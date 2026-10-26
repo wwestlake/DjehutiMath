@@ -79,6 +79,7 @@ std::vector<std::string> Workspace::setCell(const math_doc::MathSnapshot& snapsh
 std::vector<std::string> Workspace::removeCell(const std::string& id)
 {
     if (cells.erase(id) == 0) return {};
+    outcomes.erase(id);
     std::set<std::string> invalidated { id };
     if (graphState.has(id))
         for (const auto& d : graphState.transitiveDependents(id)) invalidated.insert(d);
@@ -89,6 +90,7 @@ std::vector<std::string> Workspace::removeCell(const std::string& id)
 void Workspace::clear()
 {
     cells.clear();
+    outcomes.clear();
     graphState = math_deps::Graph();
     declared.clear();
     extra.clear();
@@ -349,8 +351,110 @@ const StoredResult* Workspace::result(const std::string& id)
     return resultStatus(id) == ResultStatus::Current ? cells[id].stored.get() : nullptr;
 }
 
+const char* outcomeStateName(OutcomeState state)
+{
+    switch (state)
+    {
+        case OutcomeState::Current: return "current";
+        case OutcomeState::Stale: return "stale";
+        case OutcomeState::Blocked: return "blocked";
+        default: return "none";
+    }
+}
+
+const Outcome* Workspace::outcome(const std::string& id) const
+{
+    const auto it = outcomes.find(id);
+    return it == outcomes.end() ? nullptr : &it->second;
+}
+
+void Workspace::clearOutcome(const std::string& id) { outcomes.erase(id); }
+
+bool Workspace::evaluable(const std::string& id)
+{
+    const auto a = analysis(id);
+    if (a == nullptr || a->role == math_doc::Role::Assumption || a->ir == nullptr || a->ir->op == math_ir::Op::Hole) return false;   // nothing entered yet
+    for (const auto& d : a->definitions)
+        if (d.isFunction) return false;          // a function definition has nothing to compute until it is called
+    return true;
+}
+
+OutcomeState Workspace::outcomeState(const std::string& id)
+{
+    refresh();
+    const auto it = outcomes.find(id);
+    if (cells.find(id) == cells.end()) return OutcomeState::None;
+    if (graphState.blocked(id)) return OutcomeState::Blocked;
+    if (it == outcomes.end()) return OutcomeState::None;
+    const auto now = ticket(id);
+    return it->second.ticket.revision == now.revision && it->second.ticket.stamp == now.stamp ? OutcomeState::Current : OutcomeState::Stale;
+}
+
+const Outcome* Workspace::currentOutcome(const std::string& id, math_solver::Operation op)
+{
+    const auto state = outcomeState(id);
+    if (state != OutcomeState::Current) return nullptr;
+    const auto* o = outcome(id);
+    if (o == nullptr || o->op != op) return nullptr;
+    // an interrupted run says nothing about the mathematics; try again
+    if (o->response.status == math_solver::Status::Cancelled || o->response.status == math_solver::Status::TimedOut) return nullptr;
+    return o;
+}
+
+Evaluation Workspace::compute(const std::string& id, const math_solver::Registry& registry, const EvaluateOptions& options,
+                              const std::map<std::string, math_value::Value>& bindings,
+                              const std::map<std::string, math_solver::FunctionDefinition>& functions,
+                              const std::vector<std::string>& upstreamFailed)
+{
+    Evaluation evaluation;
+    evaluation.ticket = ticket(id);
+    const auto self = analysis(id);
+    math_solver::Request request;
+    request.op = options.op;
+    request.cancel = options.cancel;
+    if (options.timeoutMs > 0)
+    {
+        request.hasDeadline = true;
+        request.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeoutMs);
+    }
+    request.cell = id;
+    request.cellRevision = cells[id].snapshot.cellRevision;
+    request.bindings = bindings;
+    request.functions = functions;
+    request.expr = self->ir;
+    if (self->role == math_doc::Role::Definition && self->ir != nullptr && self->ir->op == math_ir::Op::Define && self->ir->args.size() == 2)
+        request.expr = self->ir->args[1];
+    ++statistics.engineRuns;
+    ++statistics.evaluations;
+    evaluation.response = registry.run(request);
+    const bool good = evaluation.response.status == math_solver::Status::Ok && evaluation.response.value.ok();
+    if (!good && !upstreamFailed.empty())
+    {
+        std::string names;
+        for (size_t i = 0; i < upstreamFailed.size(); ++i) names += (i ? ", " : "") + upstreamFailed[i];
+        evaluation.response.diagnostics.push_back({ Diagnostic::Severity::Info, "upstream-failed", "It depends on " + names + ", which could not be computed.", {} });
+    }
+    if (evaluation.response.status == math_solver::Status::Ok)
+        evaluation.stored = submitResult(evaluation.ticket, evaluation.response.value);
+    Outcome o;
+    o.response = evaluation.response;
+    o.ticket = evaluation.ticket;
+    o.op = options.op;
+    o.sequence = ++sequence;
+    outcomes[id] = std::move(o);
+    return evaluation;
+}
+
 Evaluation Workspace::evaluate(const std::string& id, const math_solver::Registry& registry, math_solver::Operation op,
                                std::shared_ptr<math_solver::CancelToken> cancel)
+{
+    EvaluateOptions options;
+    options.op = op;
+    options.cancel = std::move(cancel);
+    return evaluate(id, registry, options);
+}
+
+Evaluation Workspace::evaluate(const std::string& id, const math_solver::Registry& registry, const EvaluateOptions& options)
 {
     refresh();
     Evaluation evaluation;
@@ -359,16 +463,39 @@ Evaluation Workspace::evaluate(const std::string& id, const math_solver::Registr
         evaluation.response.status = math_solver::Status::Failed;
         evaluation.response.value = math_value::Value::failed(code, message);
         evaluation.response.diagnostics.push_back({ Diagnostic::Severity::Error, code, message, {} });
+        Outcome o;
+        o.response = evaluation.response; o.ticket = evaluation.ticket; o.op = options.op; o.sequence = ++sequence;
+        if (cells.count(id) > 0) outcomes[id] = std::move(o);
         return evaluation;
     };
     const auto self = analysis(id);
     if (self == nullptr) return fail("unknown-cell", "The cell is not a math cell of this worksheet.");
     if (!evaluation.ticket.valid) return fail("blocked", "The cell depends on a circular definition and cannot be computed.");
     if (self->hasPlaceholder) return fail("incomplete", "The cell has an empty position (placeholder) and cannot be computed.");
+    if (self->ir == nullptr) return fail("no-expression", "The cell has no expression to compute.");
+    for (const auto& d : diagnostics(id))
+        if (d.severity == Diagnostic::Severity::Error && d.code != "blocked")
+        {
+            evaluation = fail(d.code.c_str(), d.message);
+            evaluation.response.diagnostics.back().where = d.where;
+            outcomes[id].response.diagnostics.back().where = d.where;
+            return evaluation;
+        }
+    if (!options.force)
+        if (const auto* cached = currentOutcome(id, options.op))
+        {
+            evaluation.response = cached->response;
+            evaluation.reused = true;
+            evaluation.stored = resultStatus(id) == ResultStatus::Current;
+            ++statistics.reused;
+            return evaluation;
+        }
 
     // the definitions this cell needs, dependencies first
-    std::set<std::string> needed = graphState.transitiveDependencies(id);
+    const std::set<std::string> needed = graphState.transitiveDependencies(id);
     std::map<std::string, math_value::Value> bindings;
+    std::map<std::string, math_solver::FunctionDefinition> functions;
+    std::vector<std::string> upstreamFailed;
     for (const auto& dependency : graphState.order())
     {
         if (needed.count(dependency) == 0 || dependency == id) continue;
@@ -376,43 +503,61 @@ Evaluation Workspace::evaluate(const std::string& id, const math_solver::Registr
         if (a == nullptr || a->role != math_doc::Role::Definition) continue;
         for (const auto& def : a->definitions)
         {
-            if (def.isFunction || def.body == nullptr) continue;
-            if (const auto* cached = result(dependency))
+            if (def.body == nullptr) continue;
+            if (def.isFunction)
             {
-                if (cached->value.ok()) bindings[def.name] = cached->value;
+                functions[def.name] = { def.params, def.body };
                 continue;
             }
-            math_solver::Request request;
-            request.op = math_solver::Operation::Evaluate;
-            request.expr = def.body;
-            request.bindings = bindings;
-            request.cancel = cancel;
-            request.cell = dependency;
-            request.cellRevision = cells[dependency].snapshot.cellRevision;
-            const auto ticketForDependency = ticket(dependency);
-            const auto response = registry.run(request);
-            if (response.status == math_solver::Status::Ok)
+            bool broken = false;
+            for (const auto& d : diagnostics(dependency))
+                if (d.severity == Diagnostic::Severity::Error && d.code != "blocked") broken = true;
+            if (broken) { upstreamFailed.push_back(def.name); continue; }
+            math_value::Value value;
+            EvaluateOptions dependencyOptions = options;
+            dependencyOptions.op = math_solver::Operation::Evaluate;
+            if (const auto* cached = currentOutcome(dependency, math_solver::Operation::Evaluate))
             {
-                submitResult(ticketForDependency, response.value);
-                evaluation.computed.push_back(dependency);
-                if (response.value.ok()) bindings[def.name] = response.value;
+                ++statistics.reused;
+                value = cached->response.value;
             }
+            else
+            {
+                const auto dep = compute(dependency, registry, dependencyOptions, bindings, functions, {});
+                if (dep.response.status == math_solver::Status::Ok) evaluation.computed.push_back(dependency);
+                value = dep.response.value;
+            }
+            if (value.ok() && (value.isScalar() || value.kind == math_value::Kind::Vector || value.kind == math_value::Kind::Matrix))
+                bindings[def.name] = value;
+            else
+                upstreamFailed.push_back(def.name);
         }
     }
-
-    math_solver::Request request;
-    request.op = op;
-    request.cancel = cancel;
-    request.cell = id;
-    request.cellRevision = cells[id].snapshot.cellRevision;
-    request.bindings = bindings;
-    request.expr = self->ir;
-    if (self->role == math_doc::Role::Definition && self->ir != nullptr && self->ir->op == math_ir::Op::Define && self->ir->args.size() == 2)
-        request.expr = self->ir->args[1];
-    if (request.expr == nullptr) return fail("no-expression", "The cell has no expression to compute.");
-    evaluation.response = registry.run(request);
-    if (evaluation.response.status == math_solver::Status::Ok)
-        evaluation.stored = submitResult(evaluation.ticket, evaluation.response.value);
+    const auto computedFirst = evaluation.computed;
+    evaluation = compute(id, registry, options, bindings, functions, upstreamFailed);
+    evaluation.computed = computedFirst;
     return evaluation;
+}
+
+BatchResult Workspace::evaluateCells(const std::vector<std::string>& ids, const math_solver::Registry& registry, const EvaluateOptions& options)
+{
+    refresh();
+    BatchResult batch;
+    const std::set<std::string> wanted(ids.begin(), ids.end());
+    for (const auto& id : graphState.order())
+    {
+        if (wanted.count(id) == 0) continue;
+        if (!evaluable(id)) { batch.skipped.push_back(id); clearOutcome(id); continue; }
+        const auto result = evaluate(id, registry, options);
+        (result.reused ? batch.reused : batch.evaluated).push_back(id);
+        if (result.response.status != math_solver::Status::Ok || !result.response.value.ok()) batch.failed.push_back(id);
+    }
+    return batch;
+}
+
+BatchResult Workspace::evaluateAll(const math_solver::Registry& registry, const EvaluateOptions& options)
+{
+    refresh();
+    return evaluateCells(cellIds(), registry, options);
 }
 }

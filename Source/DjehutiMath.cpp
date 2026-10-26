@@ -38,6 +38,8 @@ DjehutiMath::DjehutiMath()
         document->modified = properties.getUserSettings()->getBoolValue("worksheetModified", false);
     }
     auto sheet = std::make_unique<WorksheetPanel>(document); worksheet = sheet.get(); worksheet->onChanged = [this] { refreshProject(); };
+    worksheet->runCommand = [this](const std::string& tool, const juce::var& arguments) { return dispatch(tool, juce::JSON::toString(arguments, true).toStdString(), std::make_shared<DjehutiAgentRequestState>()); };
+    worksheet->setMathWorkspace(&mathWorkspace);
     dock->registerPanel("worksheet", "Worksheet", std::move(sheet), CreationDock::DockTargetZone::CenterTab);
     auto language = std::make_unique<FrustPanel>(); frust = language.get(); dock->registerPanel("frust", "FRust", std::move(language), CreationDock::DockTargetZone::CenterTab);
     // Node programming (the DEWB/FrustIDE node editor), the debugger that steps its programs, and the DSP workbench.
@@ -280,7 +282,7 @@ juce::String DjehutiMath::dispatch(const std::string& name, const std::string& a
         o->setProperty("complete", complete); o->setProperty("lines", lines);
         return juce::JSON::toString(juce::var(o));
     }
-    if (math_commands::handles(name)) return math_commands::execute(name, args, *document, mathWorkspace);
+    if (math_commands::handles(name)) { const auto reply = math_commands::execute(name, args, *document, mathWorkspace); worksheet->refreshResults(); return reply; }
     if (name == "worksheet_run_cell") { juce::String error; const bool ok = worksheet->runCell(args["id"].toString(), error); return result(ok, ok ? "Calculation started; use execution_status for its result." : error); }
     if (name == "workspace_inspect") return juce::JSON::toString(MathSession::instance().inspect());
     if (name == "frust_source") { if (args.hasProperty("source")) frust->setSource(args["source"].toString()); dock->activatePanel("frust"); return result(true, frust->getSource()); }

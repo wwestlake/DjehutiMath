@@ -13,6 +13,9 @@ public:
     MathView();
 
     void setContent(std::vector<math_doc::NodePtr> lines, math_doc::Role role);
+    // Results are shown with a different look from user-entered mathematics; `dimmed` marks an outdated result.
+    void setAppearance(juce::Colour background, juce::Colour foreground) { backgroundColour = background; foregroundColour = foreground; repaint(); }
+    void setDimmed(bool shouldDim) { dimmed = shouldDim; repaint(); }
     // The height this content needs at the current font size, including padding.
     int preferredHeight() const;
     const math_layout::Rendered& rendered() const { return result; }
@@ -29,6 +32,8 @@ public:
 private:
     juce::Point<float> origin() const;
 
+    juce::Colour backgroundColour { 0xff10161d }, foregroundColour { 0xffeaf1f7 };
+    bool dimmed = false;
     std::vector<math_doc::NodePtr> content;
     math_doc::Role role = math_doc::Role::Expression;
     math_layout::Rendered result;
