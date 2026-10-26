@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 #include "DjehutiMath.h"
 #include "DspCheck.h"
+#include "MathCheck.h"
 #include "MathKnowledge.h"
 #include "MathSession.h"
 #include "ProtectedCredentialStore.h"
@@ -74,6 +75,12 @@ public:
             const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/foundation-check.json");
             std::exit(foundationCheck(report) ? 0 : 1);
         }
+        if (commandLine.startsWith("--math-check"))
+        {
+            const auto arguments = juce::StringArray::fromTokens(commandLine, true);
+            const auto report = arguments.size() > 1 ? juce::File(arguments[1].unquoted()) : juce::File::getCurrentWorkingDirectory().getChildFile("build/math-check.json");
+            std::exit(mathCheck(report) ? 0 : 1);
+        }
         if (commandLine.startsWith("--dsp-check"))
         {
             const auto arguments = juce::StringArray::fromTokens(commandLine, true);
@@ -91,7 +98,7 @@ private:
     public:
         Window() : DocumentWindow("Djehuti Math", juce::Colour(0xff101720), allButtons)
         {
-            setUsingNativeTitleBar(true); setContentOwned(new DjehutiMath(), true); setResizable(true, true); setResizeLimits(1050, 700, 3840, 2160); centreWithSize(1500, 950); setVisible(true);
+            setUsingNativeTitleBar(true); if (const auto icon = DjehutiMath::brandImage(64); icon.isValid()) setIcon(icon); setContentOwned(new DjehutiMath(), true); setResizable(true, true); setResizeLimits(1050, 700, 3840, 2160); centreWithSize(1500, 950); setVisible(true);
         }
         void closeButtonPressed() override { if (auto* app = dynamic_cast<DjehutiMath*>(getContentComponent())) app->confirmCloseThen([] { JUCEApplication::getInstance()->systemRequestedQuit(); }); }
     };

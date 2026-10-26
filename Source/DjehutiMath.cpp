@@ -5,7 +5,7 @@
 
 namespace
 {
-enum { newFile = 1, openFile, saveFile, saveAsFile, openSource, saveSource, quitApp, agentSettings = 20, login, logout, localHelp, onlineHelp, aboutApp, saveLayout = 40, presetBase = 100, userLayoutBase = 200, viewBase = 500 };
+enum { newFile = 1, openFile, saveFile, saveAsFile, openSource, saveSource, quitApp, addMathCell, agentSettings = 20, login, logout, localHelp, onlineHelp, aboutApp, saveLayout = 40, presetBase = 100, userLayoutBase = 200, viewBase = 500 };
 std::unique_ptr<juce::TextEditor> readout()
 {
     auto editor = std::make_unique<juce::TextEditor>(); editor->setMultiLine(true); editor->setReadOnly(true); editor->setScrollbarsShown(true);
@@ -27,7 +27,7 @@ juce::File DjehutiMath::stateDirectory() const { return juce::File::getSpecialLo
 DjehutiMath::DjehutiMath()
 {
     juce::PropertiesFile::Options options; options.applicationName = "DjehutiMath"; options.folderName = "DjehutiMath"; options.filenameSuffix = ".settings"; properties.setStorageParameters(options);
-    auth.loadFromDisk(); addAndMakeVisible(menu); addAndMakeVisible(avatar);
+    logo = brandImage(96); auth.loadFromDisk(); addAndMakeVisible(menu); addAndMakeVisible(avatar);
     dock = std::make_unique<CreationDock::DockManager>(*this); addAndMakeVisible(*dock);
     document->reset(); auto recovery = stateDirectory().getChildFile("session.djmath"); juce::String error;
     if (recovery.existsAsFile() && document->load(recovery, error))
@@ -110,12 +110,26 @@ void DjehutiMath::executeCommand(const std::string& name, const std::string& arg
     // A program run or compile answers when it settles; every other command answers at once.
     if (!dispatchAsync(name, argumentsJson, done)) done(dispatch(name, argumentsJson, state));
 }
-void DjehutiMath::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff101720)); }
-void DjehutiMath::resized() { auto area = getLocalBounds(); auto header = area.removeFromTop(42); menu.setBounds(header.removeFromLeft(650)); avatar.setBounds(header.removeFromRight(avatar.getPreferredWidth()).reduced(4, 5)); dock->setBounds(area); }
+juce::Image DjehutiMath::brandImage(int size)
+{
+    static const int sizes[] = { 16, 24, 32, 48, 64, 96, 128, 256, 512 };
+    int chosen = sizes[8];
+    for (int s : sizes) if (s >= size) { chosen = s; break; }
+    const auto name = "djehuti-math-" + juce::String(chosen) + ".png";
+    auto file = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("branding").getChildFile(name);
+    if (!file.existsAsFile()) file = juce::File(DJEHUTIMATH_SOURCE_ROOT).getChildFile("Resources").getChildFile("branding").getChildFile(name);
+    return file.existsAsFile() ? juce::ImageFileFormat::loadFrom(file) : juce::Image();
+}
+void DjehutiMath::paint(juce::Graphics& g)
+{
+    g.fillAll(juce::Colour(0xff101720));
+    if (logo.isValid()) g.drawImage(logo, logoBounds.toFloat(), juce::RectanglePlacement::centred);
+}
+void DjehutiMath::resized() { auto area = getLocalBounds(); auto header = area.removeFromTop(42); logoBounds = header.removeFromLeft(46).reduced(5); menu.setBounds(header.removeFromLeft(650)); avatar.setBounds(header.removeFromRight(avatar.getPreferredWidth()).reduced(4, 5)); dock->setBounds(area); }
 void DjehutiMath::refreshProject()
 {
     juce::String text = document->title + (document->modified ? " *" : "") + "\n\n" + (worksheetFile == juce::File() ? "Unsaved worksheet" : worksheetFile.getFileName()) + "\n\nCELLS\n";
-    for (size_t i = 0; i < document->cells.size(); ++i) text += juce::String((int)i + 1) + "  " + (document->cells[i].kind == "frust" ? "FRust" : "Notes") + "\n";
+    for (size_t i = 0; i < document->cells.size(); ++i) text += juce::String((int)i + 1) + "  " + (document->cells[i].kind == "frust" ? "FRust" : document->cells[i].kind == "math" ? "Math" : "Notes") + "\n";
     text += "\nFRust programs share the scalar workspace.\nRuntime results are regenerated, not saved as authoritative calculations."; project->setText(text, false);
 }
 void DjehutiMath::timerCallback()
@@ -148,7 +162,7 @@ juce::StringArray DjehutiMath::getMenuBarNames() { return {"File", "View", "Layo
 juce::PopupMenu DjehutiMath::getMenuForIndex(int index, const juce::String&)
 {
     juce::PopupMenu out;
-    if (index == 0) { out.addItem(newFile, "New Worksheet"); out.addItem(openFile, juce::String::fromUTF8("Open Worksheet…")); out.addItem(saveFile, "Save Worksheet"); out.addItem(saveAsFile, juce::String::fromUTF8("Save Worksheet As…")); out.addSeparator(); out.addItem(openSource, juce::String::fromUTF8("Open FRust Source…")); out.addItem(saveSource, juce::String::fromUTF8("Save FRust Source As…")); out.addSeparator(); out.addItem(quitApp, "Exit"); }
+    if (index == 0) { out.addItem(newFile, "New Worksheet"); out.addItem(openFile, juce::String::fromUTF8("Open Worksheet…")); out.addItem(saveFile, "Save Worksheet"); out.addItem(saveAsFile, juce::String::fromUTF8("Save Worksheet As…")); out.addSeparator(); out.addItem(addMathCell, "Add Math Cell"); out.addSeparator(); out.addItem(openSource, juce::String::fromUTF8("Open FRust Source…")); out.addItem(saveSource, juce::String::fromUTF8("Save FRust Source As…")); out.addSeparator(); out.addItem(quitApp, "Exit"); }
     if (index == 1) { int i = viewBase; for (const auto& id : dock->getRegisteredPanelIds()) out.addItem(i++, dock->getPanelTitle(id), true, dock->isPanelOpen(id)); }
     if (index == 2)
     {
@@ -178,6 +192,7 @@ void DjehutiMath::menuItemSelected(int id, int)
             const bool save = id == saveSource; chooser = std::make_unique<juce::FileChooser>(save ? "Save FRust Source" : "Open FRust Source", juce::File(), "*.frust;*.fr");
             chooser->launchAsync((save ? juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting : juce::FileBrowserComponent::openMode) | juce::FileBrowserComponent::canSelectFiles, [safe = juce::Component::SafePointer<DjehutiMath>(this), save](const auto& fc) { if (safe == nullptr || fc.getResult() == juce::File()) return; if (save) { if (!fc.getResult().replaceWithText(safe->frust->getSource())) safe->diagnostics->setText("Could not save FRust source.", false); } else safe->frust->setSource(fc.getResult().loadFileAsString()); safe->dock->activatePanel("frust"); }); break;
         }
+        case addMathCell: dock->activatePanel("worksheet"); worksheet->addMathCell(math_doc::Role::Expression, {}); break;
         case quitApp: confirmCloseThen([] { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }); break;
         case agentSettings: showAgentSettings(); break;
         case login: auth.beginLogin(); break;
@@ -228,8 +243,42 @@ juce::String DjehutiMath::dispatch(const std::string& name, const std::string& a
         const bool ok = name == "worksheet_save" ? document->save(file, error) : document->load(file, error);
         if (ok) { worksheetFile = file; worksheet->rebuild(); refreshProject(); } return result(ok, ok ? file.getFullPathName() : error);
     }
-    if (name == "worksheet_add_cell") { const auto id = worksheet->addCell(args["kind"].toString(), args["source"].toString()); return result(id.isNotEmpty(), id.isNotEmpty() ? id : "Cell kind must be text or frust; at most 200 cells of 100000 characters."); }
-    if (name == "worksheet_set_cell") return result(worksheet->setCell(args["id"].toString(), args["source"].toString()), "Cell updated if the id exists and source fits the limit.");
+    if (name == "worksheet_add_cell")
+    {
+        math_doc::Role role = math_doc::Role::Expression;
+        if (args.hasProperty("role") && !math_doc::roleFromName(args["role"].toString().toStdString(), role)) return result(false, "role must be expression, definition, equation, constraint, assumption or system.");
+        const auto kind = args["kind"].toString();
+        const auto id = kind == "math" ? worksheet->addMathCell(role, args["source"].toString()) : worksheet->addCell(kind, args["source"].toString());
+        if (id.isEmpty()) return result(false, "Cell kind must be text, frust or math; at most 200 cells of 100000 characters.");
+        auto* o = new juce::DynamicObject(); o->setProperty("ok", true); o->setProperty("message", id); o->setProperty("id", id);
+        if (kind == "math") { juce::Array<juce::var> notes; for (const auto& n : worksheet->notesFor(id)) notes.add(n); o->setProperty("notes", notes); }
+        return juce::JSON::toString(juce::var(o));
+    }
+    if (name == "worksheet_set_cell")
+    {
+        const auto cellId = args["id"].toString();
+        if (args.hasProperty("role"))
+        {
+            math_doc::Role role;
+            if (!math_doc::roleFromName(args["role"].toString().toStdString(), role)) return result(false, "role must be expression, definition, equation, constraint, assumption or system.");
+            if (!worksheet->setMathRole(cellId, role)) return result(false, "The cell is not a math cell, or the role cannot be applied.");
+        }
+        if (!args.hasProperty("source")) return result(true, "Cell updated.");
+        const bool ok = worksheet->setCell(cellId, args["source"].toString());
+        auto* o = new juce::DynamicObject(); o->setProperty("ok", ok); o->setProperty("message", ok ? "Cell updated." : "The id is unknown or the source cannot be applied.");
+        if (ok) { juce::Array<juce::var> notes; for (const auto& n : worksheet->notesFor(cellId)) notes.add(n); if (!notes.isEmpty()) o->setProperty("notes", notes); }
+        return juce::JSON::toString(juce::var(o));
+    }
+    if (name == "worksheet_math_snapshot")
+    {
+        math_doc::MathSnapshot snap;
+        if (!document->snapshot(args["id"].toString(), snap)) return result(false, "The id is not a math cell.");
+        auto* o = new juce::DynamicObject(); o->setProperty("ok", true); o->setProperty("cellId", juce::String(snap.cellId)); o->setProperty("revision", (juce::int64) snap.cellRevision);
+        o->setProperty("role", math_doc::roleName(snap.role));
+        bool complete = true; juce::Array<juce::var> lines; for (const auto& line : snap.lines) { lines.add(math_doc::toVar(line)); complete = complete && !math_doc::hasPlaceholder(line); }
+        o->setProperty("complete", complete); o->setProperty("lines", lines);
+        return juce::JSON::toString(juce::var(o));
+    }
     if (name == "worksheet_run_cell") { juce::String error; const bool ok = worksheet->runCell(args["id"].toString(), error); return result(ok, ok ? "Calculation started; use execution_status for its result." : error); }
     if (name == "workspace_inspect") return juce::JSON::toString(MathSession::instance().inspect());
     if (name == "frust_source") { if (args.hasProperty("source")) frust->setSource(args["source"].toString()); dock->activatePanel("frust"); return result(true, frust->getSource()); }

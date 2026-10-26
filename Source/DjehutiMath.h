@@ -21,6 +21,8 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     void confirmCloseThen(std::function<void()>);
+    // The approved Djehuti Math emblem at (about) the requested size, from Resources/branding; empty if the file is missing.
+    static juce::Image brandImage(int size);
     // The one command entry point (message thread): the agent, the local API and the checks all
     // run tools through it. `done` receives the tool's JSON result, possibly later (a compile, a run).
     void executeCommand(const std::string& name, const std::string& argumentsJson,
@@ -51,6 +53,8 @@ private:
     void refreshProject();
     juce::File stateDirectory() const;
     juce::ApplicationProperties properties;
+    juce::Image logo;
+    juce::Rectangle<int> logoBounds;
     AudioPipeline audio;
     DesktopAuthSession auth { "djehuti-math" };
     ProfileAvatarComponent avatar { auth };
