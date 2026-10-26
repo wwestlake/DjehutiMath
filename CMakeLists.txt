@@ -33,24 +33,64 @@ target_sources(DjehutiMath PRIVATE
     Source/MathSession.cpp Source/MathKnowledge.cpp
     Source/DjehutiMenuBarComponent.cpp Source/DjehutiAgent.cpp Source/ProtectedCredentialStore.cpp
     Source/Auth/DesktopAuthSession.cpp Source/Auth/ProfileAvatarComponent.cpp
-    Source/FrustEngine.cpp Source/FrustExecution.cpp Source/FrustPanel.cpp)
+    Source/FrustEngine.cpp Source/FrustExecution.cpp Source/FrustPanel.cpp
+    Source/NodeCompiler.cpp Source/NodeDesignerPanel.cpp Source/FrustDebuggerPanel.cpp
+    Source/AudioPipeline.cpp Source/DspEffect.cpp Source/DspPanel.cpp Source/VstExporter.cpp
+    Source/DjehutiMathTools.cpp Source/LocalAgentApi.cpp Source/DspCheck.cpp)
 target_include_directories(DjehutiMath PRIVATE Source
     "${FRUSTLANG_ROOT}/projects/03_creation_dock/include"
     "${FRUSTLANG_ROOT}/projects/04_ai_provider/include"
     "${FRUSTLANG_ROOT}/projects/09_frust_plugin_host/include"
     "${FRUSTLANG_ROOT}/projects/01_language_paradigms/02_functional")
 target_compile_definitions(DjehutiMath PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
-    JUCE_APPLICATION_NAME_STRING="Djehuti Math" JUCE_APPLICATION_VERSION_STRING="0.1.0"
+    JUCE_PLUGINHOST_VST3=1 JUCE_APPLICATION_NAME_STRING="Djehuti Math" JUCE_APPLICATION_VERSION_STRING="0.1.0"
     DJEHUTIMATH_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
 target_compile_options(DjehutiMath PRIVATE /FS /MP1)
 # Source text containing mathematical/UI Unicode is UTF-8. Limit this source
 # option to application files so it does not rebuild the shared JUCE modules.
-set_source_files_properties(Source/DjehutiMath.cpp Source/WorksheetPanel.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
+set_source_files_properties(Source/DjehutiMath.cpp Source/WorksheetPanel.cpp Source/NodeDesignerPanel.cpp Source/NodeCompiler.cpp
+    Source/FrustDebuggerPanel.cpp Source/DspPanel.cpp Source/DjehutiMathTools.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
 target_link_libraries(DjehutiMath PRIVATE CreationDock ai_provider frust_plugin_host frust_lang
     frust_runtime frate_lib ${MATH_LLVM_LIBS} crypt32
     juce::juce_core juce::juce_data_structures juce::juce_events juce::juce_graphics
-    juce::juce_gui_basics juce::juce_gui_extra)
+    juce::juce_gui_basics juce::juce_gui_extra
+    juce::juce_audio_basics juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_utils
+    juce::juce_audio_processors)
 juce_generate_juce_header(DjehutiMath)
+
+# The VST3 runtime every exported effect is packaged on. The application build
+# builds it and copies the bundle to templates/vst3 beside the executable.
+juce_add_plugin(DjehutiMathEffectVst
+    COMPANY_NAME "Djehuti Math"
+    BUNDLE_ID "com.lagdaemon.djehuti.math.effect"
+    PRODUCT_NAME "Djehuti Math Effect"
+    PLUGIN_MANUFACTURER_CODE Djmt
+    PLUGIN_CODE DmFx
+    FORMATS VST3
+    IS_SYNTH FALSE NEEDS_MIDI_INPUT FALSE NEEDS_MIDI_OUTPUT FALSE IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    VST3_AUTO_MANIFEST FALSE
+    VERSION 1.0.0)
+target_sources(DjehutiMathEffectVst PRIVATE
+    Source/GeneratedVst/MathEffectVst.h Source/GeneratedVst/MathEffectVst.cpp
+    Source/DspEffect.h Source/DspEffect.cpp Source/FrustEngine.h Source/FrustEngine.cpp
+    Source/MathSession.h Source/MathSession.cpp)
+target_include_directories(DjehutiMathEffectVst PRIVATE Source Source/GeneratedVst
+    "${FRUSTLANG_ROOT}/projects/09_frust_plugin_host/include"
+    "${FRUSTLANG_ROOT}/projects/01_language_paradigms/02_functional")
+target_compile_definitions(DjehutiMathEffectVst PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
+target_compile_options(DjehutiMathEffectVst PRIVATE /FS /MP1)
+target_link_libraries(DjehutiMathEffectVst PRIVATE frust_plugin_host frust_lang frust_runtime frate_lib ${MATH_LLVM_LIBS}
+    juce::juce_core juce::juce_data_structures juce::juce_events juce::juce_graphics juce::juce_gui_basics
+    juce::juce_audio_basics juce::juce_audio_processors)
+juce_generate_juce_header(DjehutiMathEffectVst)
+add_dependencies(DjehutiMath DjehutiMathEffectVst_VST3)
+
+add_custom_command(TARGET DjehutiMath POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "$<TARGET_FILE_DIR:DjehutiMathEffectVst_VST3>/../.."
+        "$<TARGET_FILE_DIR:DjehutiMath>/templates/vst3/Djehuti Math Effect.vst3"
+    COMMENT "Packaging the VST3 runtime template")
 add_custom_command(TARGET DjehutiMath POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/knowledge" "$<TARGET_FILE_DIR:DjehutiMath>/knowledge"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/docs" "$<TARGET_FILE_DIR:DjehutiMath>/docs"

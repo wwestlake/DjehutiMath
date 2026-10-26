@@ -39,6 +39,41 @@ DjehutiMath::DjehutiMath()
     auto sheet = std::make_unique<WorksheetPanel>(document); worksheet = sheet.get(); worksheet->onChanged = [this] { refreshProject(); };
     dock->registerPanel("worksheet", "Worksheet", std::move(sheet), CreationDock::DockTargetZone::CenterTab);
     auto language = std::make_unique<FrustPanel>(); frust = language.get(); dock->registerPanel("frust", "FRust", std::move(language), CreationDock::DockTargetZone::CenterTab);
+    // Node programming (the DEWB/FrustIDE node editor), the debugger that steps its programs, and the DSP workbench.
+    auto nodeEditor = std::make_unique<NodeDesignerPanel>(); nodes = nodeEditor.get();
+    nodes->defaultFolder = [this] { auto folder = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("DjehutiMath").getChildFile("Node Programs"); folder.createDirectory(); return folder; };
+    nodes->onRunRequested = [this](const juce::String& script, const juce::String& label) { std::string error; if (!frust->start(script, label, error)) appendLog("Node program " + label + " did not start: " + juce::String(error)); else dock->activatePanel("frust"); };
+    nodes->onDebugRequested = [this] { const auto why = startNodeDebugging(); if (why.isNotEmpty()) appendLog("Start Debugging: " + why); else dock->activatePanel("debugger"); };
+    nodes->onDebugMarkersChanged = [this] { syncDebugMarkers(); };
+    dock->registerPanel("nodes", "Node Designer", std::move(nodeEditor), CreationDock::DockTargetZone::CenterTab);
+    FrustDebuggerPanel::Actions debugActions;
+    debugActions.startDebugging = [this] { return startNodeDebugging(); };
+    debugActions.breakpoints = [this] { std::vector<frust_exec::Breakpoint> list; juce::String ignored; const auto lines = nodes->nodeLines(ignored); for (const auto& m : nodes->breakpointMarkers()) list.push_back({ m.nodeId.toStdString(), lines.count(m.nodeId) != 0 ? lines.at(m.nodeId) : 0, m.enabled, 0 }); return list; };
+    debugActions.setBreakpointEnabled = [this](const juce::String& nodeId, bool enabled) { juce::String ignored; nodes->setBreakpoint(nodeId, true, enabled, ignored); };
+    debugActions.removeBreakpoint = [this](const juce::String& nodeId) { juce::String ignored; nodes->setBreakpoint(nodeId, false, true, ignored); };
+    auto debuggerView = std::make_unique<FrustDebuggerPanel>(std::move(debugActions)); debugger = debuggerView.get();
+    dock->registerPanel("debugger", "Debugger", std::move(debuggerView), CreationDock::DockTargetZone::Right);
+    auto dspView = std::make_unique<DspPanel>(audio); dsp = dspView.get(); dsp->onLog = [this](const juce::String& line) { appendLog(line); };
+    dock->registerPanel("dsp", "DSP Effects", std::move(dspView), CreationDock::DockTargetZone::CenterTab);
+    executionListener = frust_exec::Executor::instance().addListener([this](const frust_exec::Snapshot&) { executionChanged(); });
+    localApi = std::make_unique<LocalAgentApi>();
+    localApi->onToolCatalog = [] {
+        juce::Array<juce::var> list;
+        for (const auto& tool : math_knowledge::tools())
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("name", juce::String(tool.name)); o->setProperty("description", juce::String(tool.description)); o->setProperty("parameters", juce::JSON::parse(juce::String(tool.parametersJson)));
+            list.add(juce::var(o));
+        }
+        return juce::var(list);
+    };
+    localApi->onToolCall = [this](const juce::String& name, const juce::var& arguments, LocalAgentApi::Completion completion) {
+        executeCommand(name.toStdString(), juce::JSON::toString(arguments, true).toStdString(), nullptr, [completion](juce::String text) {
+            const auto parsed = juce::JSON::parse(text);
+            completion(!(parsed.isObject() && parsed.hasProperty("ok") && !(bool) parsed.getProperty("ok", true)), text);
+        });
+    };
+    if (!localApi->start()) appendLog("The local agent API could not start; external agents cannot reach the tools.");
     auto projectView = readout(); project = projectView.get(); dock->registerPanel("project", "Project", std::move(projectView), CreationDock::DockTargetZone::Left);
     auto variableView = readout(); variables = variableView.get(); dock->registerPanel("variables", "Variables", std::move(variableView), CreationDock::DockTargetZone::Right);
     auto log = readout(); diagnostics = log.get(); diagnostics->setText("Djehuti Math foundation\nFRust worker and scalar workspace ready.\nSymbolic algebra, matrix backends and plotting are planned.\n", false); dock->registerPanel("diagnostics", "Diagnostics", std::move(log), CreationDock::DockTargetZone::Bottom);
@@ -48,8 +83,12 @@ DjehutiMath::DjehutiMath()
         if (juce::MessageManager::getInstance()->isThisTheMessageThread()) return safe->dispatch(name, arguments, state).toStdString();
         struct Reply { juce::WaitableEvent ready; juce::String value; std::atomic<bool> expired {false}; };
         auto reply = std::make_shared<Reply>();
-        juce::MessageManager::callAsync([safe, name, arguments, state, reply] { if (reply->expired || safe == nullptr || state->cancelled || !state->alive) { reply->value = "{\"ok\":false,\"error\":\"Request cancelled\"}"; } else reply->value = safe->dispatch(name, arguments, state); reply->ready.signal(); });
-        if (!reply->ready.wait(10000)) { reply->expired = true; return "{\"ok\":false,\"error\":\"UI command timed out; inspect the workspace before retrying\"}"; }
+        juce::MessageManager::callAsync([safe, name, arguments, state, reply] {
+            if (reply->expired || safe == nullptr || state->cancelled || !state->alive) { reply->value = "{\"ok\":false,\"error\":\"Request cancelled\"}"; reply->ready.signal(); return; }
+            // A program run or compile answers when it settles; every other command answers at once.
+            safe->executeCommand(name, arguments, state, [reply](juce::String text) { reply->value = std::move(text); reply->ready.signal(); });
+        });
+        if (!reply->ready.wait(130000)) { reply->expired = true; return "{\"ok\":false,\"error\":\"UI command timed out; inspect the workspace before retrying\"}"; }
         return reply->value.toStdString();
     });
     dock->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
@@ -59,11 +98,17 @@ DjehutiMath::DjehutiMath()
 }
 DjehutiMath::~DjehutiMath()
 {
-    stopTimer(); auth.cancelLogin(); stateDirectory().createDirectory(); dock->saveLayoutToFile(stateDirectory().getChildFile("layout.json"));
+    stopTimer(); if (localApi != nullptr) localApi->stop(); frust_exec::Executor::instance().removeListener(executionListener); auth.cancelLogin(); stateDirectory().createDirectory(); dock->saveLayoutToFile(stateDirectory().getChildFile("layout.json"));
     juce::String error; const bool dirty = document->modified; document->save(stateDirectory().getChildFile("session.djmath"), error); document->modified = dirty;
     properties.getUserSettings()->setValue("worksheetPath", worksheetFile.getFullPathName());
     properties.getUserSettings()->setValue("worksheetModified", dirty);
     properties.saveIfNeeded(); dock.reset();
+}
+void DjehutiMath::executeCommand(const std::string& name, const std::string& argumentsJson, std::shared_ptr<DjehutiAgentRequestState> state, std::function<void(juce::String)> done)
+{
+    if (state == nullptr) state = std::make_shared<DjehutiAgentRequestState>();
+    // A program run or compile answers when it settles; every other command answers at once.
+    if (!dispatchAsync(name, argumentsJson, done)) done(dispatch(name, argumentsJson, state));
 }
 void DjehutiMath::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff101720)); }
 void DjehutiMath::resized() { auto area = getLocalBounds(); auto header = area.removeFromTop(42); menu.setBounds(header.removeFromLeft(650)); avatar.setBounds(header.removeFromRight(avatar.getPreferredWidth()).reduced(4, 5)); dock->setBounds(area); }
@@ -160,7 +205,7 @@ void DjehutiMath::chooseFile(bool saveAs)
 }
 void DjehutiMath::showAgentSettings()
 {
-    juce::DialogWindow::LaunchOptions options; options.dialogTitle = juce::String::fromUTF8("Djehuti Math — Agent Settings"); options.dialogBackgroundColour = juce::Colour(0xff171b20); options.content.setOwned(new DjehutiAgentSettings(properties, {})); options.content->setSize(520, 470); options.escapeKeyTriggersCloseButton = true; options.useNativeTitleBar = true; options.resizable = false; options.launchAsync();
+    juce::DialogWindow::LaunchOptions options; options.dialogTitle = juce::String::fromUTF8("Djehuti Math — Agent Settings"); options.dialogBackgroundColour = juce::Colour(0xff171b20); options.content.setOwned(new DjehutiAgentSettings(properties, {})); options.content->setSize(520, 530); options.escapeKeyTriggersCloseButton = true; options.useNativeTitleBar = true; options.resizable = false; options.launchAsync();
 }
 void DjehutiMath::saveUserLayout()
 {
@@ -172,6 +217,7 @@ juce::String DjehutiMath::dispatch(const std::string& name, const std::string& a
     if (state->cancelled || !state->alive) return result(false, "Request cancelled");
     const auto args = juce::JSON::parse(arguments.empty() ? "{}" : juce::String(arguments));
     if (!args.isObject()) return result(false, "Arguments must be a JSON object.");
+    bool handled = true; const auto programming = dispatchProgramming(name, args, handled); if (handled) return programming;
     if (name == "worksheet_inspect") return juce::JSON::toString(document->toJson());
     if (name == "worksheet_save" || name == "worksheet_open")
     {

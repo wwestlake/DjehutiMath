@@ -12,6 +12,8 @@ Professional engineering mathematics workbench from LagDaemon Software. The firs
 - JSON layout presets, named user layouts and debounced current-layout persistence. First run uses Default.
 - Bundled Help and shared website link. Dedicated website docs and live Math login registration are pending server verification.
 
+- Node programming (DEWB node editor, compiler and debugger), audio pipeline, FRust DSP effects compiled to native code with live audition, offline measurement and VST3 export, and a localhost tool API for external agents. See HANDOFF.md for verified scope and limits.
+
 Symbolic math, numerical solver families, matrices/tensors, dimensional units, and plotting are planned, not implemented in the shell.
 
 ## Build
@@ -25,6 +27,6 @@ cmake --build build --config Debug --target DjehutiMath --parallel 1
 
 Executable: `D:/DjehutiMath/bin/Debug/djehuti_math.exe`.
 
-Optional focused foundation check uses the same executable: `djehuti_math.exe --foundation-check D:/DjehutiMath/build/foundation-check.json`. No separate JUCE test runner.
+Optional focused foundation check uses the same executable: `djehuti_math.exe --foundation-check D:/DjehutiMath/build/foundation-check.json`. No separate JUCE test runner. `djehuti_math.exe --dsp-check <report.json>` checks the node, audio, DSP and VST3 capabilities the same way.
 
 See `docs/PROJECT_SPECIFICATION.md`, `docs/getting-started.html`, and `HANDOFF.md` for scope and actual validation.
